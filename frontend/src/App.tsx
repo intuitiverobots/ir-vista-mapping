@@ -600,9 +600,12 @@ export default function App() {
       <Toaster position="bottom-center" toastOptions={{ style: { background: '#1f2937', color: '#f3f4f6', border: '1px solid #374151' } }} />
       {/* Header */}
       <header className="bg-gray-900 border-b border-gray-800 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex items-baseline gap-3">
-          <h1 className="text-xl font-bold tracking-tight text-white">Vista Capture App</h1>
-          <span className="text-sm text-gray-500">ZED2i · RTAB-Map · Jetson Orin</span>
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-xl font-bold tracking-tight text-white">Vista Capture App</h1>
+            <span className="text-sm text-gray-500">ZED2i · RTAB-Map · Jetson Orin</span>
+          </div>
+          <img src="/logo.png" alt="Logo" className="h-8 w-auto" />
         </div>
       </header>
 
@@ -1190,6 +1193,14 @@ export default function App() {
           )}
         </section>
       </main>
+
+      {/* Footer */}
+      <footer className="border-t border-gray-800 mt-6 py-8">
+        <div className="max-w-7xl mx-auto px-6 flex flex-col items-center gap-3">
+          <img src="/logo.png" alt="Intuitive Robots" className="h-14 w-auto opacity-80" />
+          <p className="text-sm text-gray-500">© {new Date().getFullYear()} Intuitive Robots. All rights reserved.</p>
+        </div>
+      </footer>
     </div>
   )
 }
