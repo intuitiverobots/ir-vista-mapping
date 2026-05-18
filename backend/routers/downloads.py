@@ -10,6 +10,7 @@ import logging
 import re
 import tempfile
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -38,15 +39,23 @@ def _human_size(n: int) -> str:
 
 @router.get("/sessions", summary="List all sessions")
 async def list_sessions():
-    stems: set[str] = set()
+    entries: dict[str, datetime] = {}
     if _RAW_DIR.is_dir():
         for p in _RAW_DIR.glob("*.svo2"):
-            stems.add(p.stem)
+            mtime = datetime.fromtimestamp(p.stat().st_mtime)
+            if p.stem not in entries or mtime > entries[p.stem]:
+                entries[p.stem] = mtime
     if _OUTPUTS_DIR.is_dir():
         for p in _OUTPUTS_DIR.iterdir():
             if p.is_dir():
-                stems.add(p.name)
-    return {"sessions": sorted(stems)}
+                mtime = datetime.fromtimestamp(p.stat().st_mtime)
+                if p.name not in entries or mtime > entries[p.name]:
+                    entries[p.name] = mtime
+    sessions = [
+        {"name": name, "date": entries[name].strftime("%Y-%m-%d %H:%M")}
+        for name in sorted(entries)
+    ]
+    return {"sessions": sessions}
 
 
 @router.get("/sessions/{name}/files", summary="List files for a session")

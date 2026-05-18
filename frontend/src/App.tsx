@@ -27,6 +27,11 @@ interface ParamDef {
   value: string  // preset default as string
 }
 
+interface DlSession {
+  name: string
+  date: string
+}
+
 interface DlFile {
   path: string
   label: string
@@ -287,7 +292,7 @@ export default function App() {
   const logEndRef = useRef<HTMLDivElement>(null)
 
   // ── Download state ──────────────────────────────────────────────
-  const [dlSessions, setDlSessions] = useState<string[]>([])
+  const [dlSessions, setDlSessions] = useState<DlSession[]>([])
   const [dlSession, setDlSession] = useState('')
   const [dlFiles, setDlFiles] = useState<DlFile[]>([])
   const [dlChecked, setDlChecked] = useState<Set<string>>(new Set())
@@ -539,7 +544,7 @@ export default function App() {
   // ── Download handlers ──────────────────────────────────────────
 
   const fetchDlSessions = () =>
-    apiGet<{ sessions: string[] }>('/api/sessions')
+    apiGet<{ sessions: DlSession[] }>('/api/sessions')
       .then(d => setDlSessions(d.sessions))
       .catch(console.error)
 
@@ -1073,7 +1078,7 @@ export default function App() {
               }}
             >
               <option value="">— select a session —</option>
-              {dlSessions.map(s => <option key={s} value={s}>{s}</option>)}
+              {dlSessions.map(s => <option key={s.name} value={s.name}>{s.name} ({s.date})</option>)}
             </select>
           </div>
 
