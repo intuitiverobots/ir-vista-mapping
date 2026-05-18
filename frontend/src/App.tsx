@@ -248,6 +248,8 @@ export default function App() {
   const startTimeRef = useRef<number>(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recordLogEndRef = useRef<HTMLDivElement>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
 
   // ── Pipeline state ─────────────────────────────────────────────
   const [configs, setConfigs] = useState<string[]>([])
@@ -371,7 +373,7 @@ export default function App() {
         const m = data.match(/exit=(-?\d+)/)
         const ok = m && m[1] === '0'
         setPipelineStatus(ok ? 'done' : 'error')
-        if (ok) setZipReady(true)
+        if (ok && stepEnabled['zip']) setZipReady(true)
         setPipelineSseUrl(null)
         sse.close()
       } else if (data && !data.startsWith(':')) {
@@ -386,6 +388,15 @@ export default function App() {
 
   const handleStartRecording = async () => {
     if (!sessionName.trim()) { alert('A session name is required'); return }
+
+    // Request microphone access before starting anything
+    let audioStream: MediaStream | null = null
+    try {
+      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch {
+      if (!window.confirm('Microphone access denied. Continue recording without audio?')) return
+    }
+
     try {
       await apiPost('/api/record/start', {
         session_name: sessionName.trim(),
@@ -399,7 +410,30 @@ export default function App() {
       setRecordLogs([])
       timerRef.current = null
       setRecordSseUrl(`/api/logs/record?t=${Date.now()}`)
+
+      // Start audio aligned with actual SVO first frame (after imu_warmup + wait)
+      if (audioStream) {
+        audioChunksRef.current = []
+        const mr = new MediaRecorder(audioStream)
+        mr.ondataavailable = (e: BlobEvent) => {
+          if (e.data.size > 0) audioChunksRef.current.push(e.data)
+        }
+        mr.onstop = () => {
+          audioStream!.getTracks().forEach(t => t.stop())
+          const blob = new Blob(audioChunksRef.current, { type: mr.mimeType })
+          const form = new FormData()
+          form.append('file', blob, `${sessionName.trim()}.webm`)
+          form.append('session_name', sessionName.trim())
+          fetch('/api/record/audio', { method: 'POST', body: form })
+            .then(r => { if (!r.ok) console.error('Audio upload failed', r.status) })
+            .catch(err => console.error('Audio upload error', err))
+        }
+        const delayMs = ((isNaN(parseFloat(imuWarmup)) ? 2.0 : parseFloat(imuWarmup))
+          + (isNaN(parseInt(captureWait)) ? 0 : parseInt(captureWait))) * 1000
+        setTimeout(() => { mr.start(); mediaRecorderRef.current = mr }, delayMs)
+      }
     } catch (err) {
+      audioStream?.getTracks().forEach(t => t.stop())
       alert(`Failed to start recording: ${err instanceof Error ? err.message : err}`)
     }
   }
@@ -408,6 +442,11 @@ export default function App() {
     try {
       await apiPost('/api/record/stop')
       if (timerRef.current) clearInterval(timerRef.current)
+      // Stop audio capture — onstop handler uploads the file
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop()
+        mediaRecorderRef.current = null
+      }
     } catch (err) {
       alert(`Failed to stop recording: ${err instanceof Error ? err.message : err}`)
     }

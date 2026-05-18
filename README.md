@@ -135,7 +135,7 @@ The app is now available at `http://<jetson-ip>:8080`.
 
 The typical field setup does **not** require a router. Two options:
 
-### Option A — Jetson Wi-Fi Hotspot (recommended)
+### Option A — Jetson Wi-Fi Hotspot
 
 Enable the Jetson's built-in hotspot (Settings → Wi-Fi → Hotspot).  
 Connect the smartphone to the Jetson's hotspot network, then open:

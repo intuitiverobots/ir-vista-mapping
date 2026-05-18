@@ -13,6 +13,9 @@ models/
 *.pgm
 .history/
 
+# TLS certificates (never commit private keys)
+*.pem
+
 # Frontend build output
 backend/static/
 

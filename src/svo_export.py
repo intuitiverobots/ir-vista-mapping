@@ -264,6 +264,64 @@ def main(opt):
                     sys.stdout.write("ffmpeg re-encoding failed:\n" + result.stderr.decode() + "\n")
                 else:
                     sys.stdout.write("Re-encoding done.\n")
+                    # --- Audio mux: look for audio file next to the SVO ---
+                    svo_stem = Path(opt.input_svo_file)
+                    audio_path = None
+                    for _ext in ('.webm', '.ogg'):
+                        _candidate = svo_stem.with_suffix(_ext)
+                        if _candidate.exists():
+                            audio_path = _candidate
+                            break
+                    if audio_path is not None:
+                        def _get_duration(p: str) -> float | None:
+                            r = subprocess.run(
+                                ["ffprobe", "-v", "error",
+                                 "-show_entries", "format=duration",
+                                 "-of", "default=noprint_wrappers=1:nokey=1", p],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            )
+                            try:
+                                return float(r.stdout.decode().strip())
+                            except ValueError:
+                                return None
+
+                        vid_dur = _get_duration(video_output_path)
+                        aud_dur = _get_duration(str(audio_path))
+                        if vid_dur is not None and aud_dur is not None:
+                            # Add a small correction for SVO tail latency:
+                            # mr.stop() and SIGINT are sent simultaneously, but svo_recording.py
+                            # keeps grabbing 1-2 frames after SIGINT before closing the SVO,
+                            # making vid_dur slightly longer than the real audio content duration.
+                            # This means (aud_dur - vid_dur) under-estimates the true head gap,
+                            # so without correction the audio plays slightly late.
+                            _SVO_TAIL_S = 0.3
+                            audio_offset = max(0.0, aud_dur - vid_dur + _SVO_TAIL_S)
+                            sys.stdout.write(
+                                f"Muxing audio: {audio_path.name} "
+                                f"(video={vid_dur:.2f}s, audio={aud_dur:.2f}s, skip={audio_offset:.2f}s)\n"
+                            )
+                            tmp_muxed = video_output_path + ".muxed.mp4"
+                            mux_result = subprocess.run(
+                                [
+                                    "ffmpeg", "-y",
+                                    "-i", video_output_path,
+                                    "-ss", f"{audio_offset:.6f}",
+                                    "-i", str(audio_path),
+                                    "-c:v", "copy",
+                                    "-c:a", "aac",
+                                    tmp_muxed,
+                                ],
+                                stderr=subprocess.PIPE,
+                            )
+                            if mux_result.returncode == 0:
+                                os.replace(tmp_muxed, video_output_path)
+                                sys.stdout.write("Audio mux done.\n")
+                            else:
+                                if os.path.exists(tmp_muxed):
+                                    os.remove(tmp_muxed)
+                                sys.stdout.write("Audio mux failed:\n" + mux_result.stderr.decode() + "\n")
+                        else:
+                            sys.stdout.write("Audio mux skipped: could not read durations.\n")
         zed.close()
     return 0
 
