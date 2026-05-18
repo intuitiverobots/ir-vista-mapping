@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Only allow safe characters in the session name (same rule as output_name)
-_SAFE_NAME = re.compile(r'^[A-Za-z0-9_\-]+$')
+_SAFE_NAME = re.compile(r'^[A-Za-z0-9_\- ]+$')
 
 
 @router.post("/record/audio", summary="Upload browser-recorded audio for a session")

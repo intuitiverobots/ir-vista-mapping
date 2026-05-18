@@ -22,7 +22,7 @@ from ..config import REPO_ROOT
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_SAFE_NAME = re.compile(r'^[A-Za-z0-9_\-]+$')
+_SAFE_NAME = re.compile(r'^[A-Za-z0-9_\- ]+$')
 _RAW_DIR = REPO_ROOT / "data" / "raw"
 _OUTPUTS_DIR = REPO_ROOT / "data" / "outputs"
 _DATA_DIR = REPO_ROOT / "data"

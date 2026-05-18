@@ -277,10 +277,12 @@ export default function App() {
     camera: false, slam: false, video: false, poses: false, projection: false, zip: false,
   })
   const [exportVideo, setExportVideo] = useState(true)
+  const [recordAudio, setRecordAudio] = useState(true)
   const [exportDepth, setExportDepth] = useState(true)
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus>('idle')
   const [logs, setLogs] = useState<string[]>([])
   const [zipReady, setZipReady] = useState(false)
+  const [zipDownloading, setZipDownloading] = useState(false)
   const [pipelineSseUrl, setPipelineSseUrl] = useState<string | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -408,10 +410,12 @@ export default function App() {
 
     // Request microphone access before starting anything
     let audioStream: MediaStream | null = null
-    try {
-      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    } catch {
-      if (!window.confirm('Microphone access denied. Continue recording without audio?')) return
+    if (recordAudio) {
+      try {
+        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      } catch {
+        if (!window.confirm('Microphone access denied. Continue recording without audio?')) return
+      }
     }
 
     try {
@@ -635,6 +639,19 @@ export default function App() {
           />
 
           {/* Advanced settings – capture */}
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="record-audio-check"
+              checked={recordAudio}
+              onChange={e => setRecordAudio(e.target.checked)}
+              disabled={isRecording}
+              className="h-4 w-4 rounded border-gray-600 bg-gray-800 accent-blue-500 disabled:opacity-40"
+            />
+            <label htmlFor="record-audio-check" className="text-sm text-gray-300">Record audio</label>
+          </div>
+
+          {/* Advanced settings – capture */}
           <div>
             <button
               onClick={() => setShowCaptureAdvanced(v => !v)}
@@ -786,6 +803,32 @@ export default function App() {
 
             {showAdvanced && (
               <div className="mt-3 space-y-3">
+
+                {/* Select all / Deselect all steps */}
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      const next: Record<string, boolean> = {}
+                      STEP_GROUPS.forEach(g => { next[g.id] = true })
+                      setStepEnabled(next)
+                    }}
+                    disabled={isPipelineRunning}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-40"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    onClick={() => {
+                      const next: Record<string, boolean> = {}
+                      STEP_GROUPS.forEach(g => { next[g.id] = false })
+                      setStepEnabled(next)
+                    }}
+                    disabled={isPipelineRunning}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-40"
+                  >
+                    Deselect all
+                  </button>
+                </div>
 
                 {/* Global params (apply to multiple steps) */}
                 {(() => {
@@ -978,21 +1021,42 @@ export default function App() {
 
           {/* Download ZIP */}
           {zipReady && zipSession && (
-            <a
-              href={`/api/download/${encodeURIComponent(zipSession)}`}
-              download
+            <button
+              onClick={async () => {
+                if (zipDownloading) return
+                setZipDownloading(true)
+                try {
+                  const r = await fetch(`/api/download/${encodeURIComponent(zipSession)}`)
+                  if (!r.ok) {
+                    const msg = await r.text().catch(() => r.statusText)
+                    throw new Error(`${r.status} ${msg}`)
+                  }
+                  const blob = await r.blob()
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = `${zipSession}.zip`
+                  a.click()
+                  URL.revokeObjectURL(url)
+                } catch (err) {
+                  toast.error(`Download failed: ${err instanceof Error ? err.message : err}`)
+                } finally {
+                  setZipDownloading(false)
+                }
+              }}
+              disabled={zipDownloading}
               className="flex items-center justify-center gap-2 w-full bg-indigo-700
-                         hover:bg-indigo-600 rounded-xl py-2.5 text-sm font-medium
+                         hover:bg-indigo-600 disabled:bg-gray-700 rounded-xl py-2.5 text-sm font-medium
                          transition-colors"
             >
-              ↓ Download {zipSession}.zip
-            </a>
+              {zipDownloading ? <><span className="animate-spin">⏳</span> Downloading…</> : <>↓ Download {zipSession}.zip</>}
+            </button>
           )}
         </section>
 
         {/* ──────────────────── Download Panel ─────────────────── */}
         <section className="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-5">
-          <h2 className="text-lg font-semibold">Télécharger des données</h2>
+          <h2 className="text-lg font-semibold">Download data</h2>
 
           {/* Session dropdown */}
           <div className="space-y-1">
@@ -1008,7 +1072,7 @@ export default function App() {
                 fetchDlFiles(name)
               }}
             >
-              <option value="">— sélectionner une session —</option>
+              <option value="">— select a session —</option>
               {dlSessions.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
@@ -1081,8 +1145,23 @@ export default function App() {
 
             return (
               <div className="space-y-4">
-                {renderGroup('Données brutes (raw)', rawFiles)}
-                {renderGroup('Sorties pipeline (outputs)', outFiles)}
+                {/* Global select/deselect all */}
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setDlChecked(new Set(dlFiles.map(f => f.path)))}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    onClick={() => setDlChecked(new Set())}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    Deselect all
+                  </button>
+                </div>
+                {renderGroup('Raw data', rawFiles)}
+                {renderGroup('Pipeline outputs', outFiles)}
 
                 {/* Download button */}
                 <button
@@ -1093,8 +1172,8 @@ export default function App() {
                              items-center justify-center gap-2"
                 >
                   {dlZipping
-                    ? <><span className="animate-spin">⏳</span> Création du ZIP…</>
-                    : <>↓ Télécharger la sélection ({dlChecked.size} fichier{dlChecked.size !== 1 ? 's' : ''}, {humanTotal(totalSelected)})</>
+                    ? <><span className="animate-spin">⏳</span> Building ZIP…</>
+                    : <>↓ Download selection ({dlChecked.size} file{dlChecked.size !== 1 ? 's' : ''}, {humanTotal(totalSelected)})</>
                   }
                 </button>
               </div>
@@ -1102,7 +1181,7 @@ export default function App() {
           })()}
 
           {!dlLoading && dlSession && dlFiles.length === 0 && (
-            <p className="text-sm text-gray-500">Aucun fichier trouvé pour cette session.</p>
+            <p className="text-sm text-gray-500">No files found for this session.</p>
           )}
         </section>
       </main>

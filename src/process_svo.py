@@ -103,16 +103,21 @@ DEFAULT_RENDER = "cloud"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def run(cmd: list[str], description: str) -> None:
-    """Run a shell command and raise on failure."""
+def run(cmd: list[str], description: str, fatal: bool = True) -> int:
+    """Run a shell command; exit on failure if fatal=True, else return the exit code."""
     print(f"\n{'='*60}")
     print(f"  {description}")
     print(f"{'='*60}\n")
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
-        print(f"\n[ERROR] Command failed (exit code {result.returncode}): {description}",
-              file=sys.stderr)
-        sys.exit(result.returncode)
+        if fatal:
+            print(f"\n[ERROR] Command failed (exit code {result.returncode}): {description}",
+                  file=sys.stderr)
+            sys.exit(result.returncode)
+        else:
+            print(f"\n[WARN] Command failed (exit code {result.returncode}): {description} — continuing.",
+                  file=sys.stderr)
+    return result.returncode
 
 
 def check_docker() -> None:
@@ -200,7 +205,8 @@ def run_step(
     cmd_in_container: list[str],
     description: str,
     extra_docker_args: list[str] | None = None,
-) -> None:
+    fatal: bool = True,
+) -> int:
     """
     Start a Docker container, run one command inside it, then remove it.
 
@@ -232,7 +238,7 @@ def run_step(
     docker_cmd.append(image)
     docker_cmd.extend(cmd_in_container)
 
-    run(docker_cmd, description)
+    return run(docker_cmd, description, fatal=fatal)
 
 
 def main() -> None:
@@ -433,6 +439,7 @@ def main() -> None:
             cmd_in_container=export_cmd,
             description=f"Step 2/2 – rtabmap-export: {args.render} export",
             extra_docker_args=export_extra,
+            fatal=False,
         )
     else:
         print("\n[SKIP] Skipping export step (--skip-export).")

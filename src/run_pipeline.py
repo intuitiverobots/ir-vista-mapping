@@ -383,27 +383,35 @@ def main() -> None:
     # Step 4/6: Pose conversion
     localisation_json = output_path / "positions.json"
     if not args.skip_poses:
-        print(f"\n{'='*60}\n  Step 4/6 – Pose conversion  →  convert_poses.py\n{'='*60}")
-        cp = load_convert_poses()
-        cp.INPUT_FILE = str(output_path / "rtabmap_poses.txt")
-        cp.OUTPUT_FILE = str(localisation_json)
-        cp.process_poses()
-        print(f"[OK] {localisation_json}")
+        poses_txt = output_path / "rtabmap_poses.txt"
+        if not poses_txt.is_file():
+            print(f"\n[WARN] rtabmap_poses.txt not found, skipping pose conversion: {poses_txt}", file=sys.stderr)
+        else:
+            print(f"\n{'='*60}\n  Step 4/6 – Pose conversion  →  convert_poses.py\n{'='*60}")
+            cp = load_convert_poses()
+            cp.INPUT_FILE = str(poses_txt)
+            cp.OUTPUT_FILE = str(localisation_json)
+            cp.process_poses()
+            print(f"[OK] {localisation_json}")
     else:
         print("\n[SKIP] Pose conversion step.")
 
     # Step 5/6: Manual 2D projection
     manual_pgm = output_path / "map_manual.pgm"
     if not args.skip_projection:
-        run(
-            [sys.executable, str(SRC_DIR / "project_ply.py"),
-             "--input", str(output_path / "rtabmap_cloud.ply"),
-             "--output", str(manual_pgm),
-             "--min_z", str(args.min_z),
-             "--max_z", str(args.max_z),
-             "--resolution", str(args.resolution)],
-            "Step 5/6 – Manual 2D projection  →  project_ply.py",
-        )
+        cloud_ply = output_path / "rtabmap_cloud.ply"
+        if not cloud_ply.is_file():
+            print(f"\n[WARN] rtabmap_cloud.ply not found, skipping 2D projection: {cloud_ply}", file=sys.stderr)
+        else:
+            run(
+                [sys.executable, str(SRC_DIR / "project_ply.py"),
+                 "--input", str(cloud_ply),
+                 "--output", str(manual_pgm),
+                 "--min_z", str(args.min_z),
+                 "--max_z", str(args.max_z),
+                 "--resolution", str(args.resolution)],
+                "Step 5/6 – Manual 2D projection  →  project_ply.py",
+            )
     else:
         print("\n[SKIP] 2D projection step.")
 
@@ -411,24 +419,32 @@ def main() -> None:
     if not args.skip_zip:
         if args.map_choice is not None:
             if args.map_choice == 1:
-                final_pgm = output_path / "map.pgm"
-                if not final_pgm.is_file():
-                    print(f"[ERROR] map.pgm not found: {final_pgm}", file=sys.stderr)
-                    sys.exit(1)
-                final_yaml = final_pgm.with_suffix(".yaml")
+                _candidate = output_path / "map.pgm"
+                if _candidate.is_file():
+                    final_pgm = _candidate
+                    final_yaml = _candidate.with_suffix(".yaml")
+                else:
+                    print(f"[WARN] map.pgm not found, ZIP will be created without map: {_candidate}", file=sys.stderr)
+                    final_pgm = None
+                    final_yaml = None
             else:
-                if not manual_pgm.is_file():
-                    print(f"[ERROR] map_manual.pgm not found: {manual_pgm}", file=sys.stderr)
-                    sys.exit(1)
-                final_pgm = manual_pgm
-                final_yaml = manual_pgm.with_suffix(".yaml")
+                if manual_pgm.is_file():
+                    final_pgm = manual_pgm
+                    final_yaml = manual_pgm.with_suffix(".yaml")
+                else:
+                    print(f"[WARN] map_manual.pgm not found, ZIP will be created without map: {manual_pgm}", file=sys.stderr)
+                    final_pgm = None
+                    final_yaml = None
         else:
             final_pgm, final_yaml = ask_map_choice(output_path / "map.pgm", manual_pgm)
 
         zip_path = output_path / f"{output_name}.zip"
         print(f"\n{'='*60}\n  Step 6/6 – Creating ZIP\n{'='*60}")
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.write(localisation_json, "positions.json")
+            if localisation_json.is_file():
+                zf.write(localisation_json, "positions.json")
+            else:
+                print(f"[WARN] positions.json not found, skipped.", file=sys.stderr)
             if mp4_path.is_file():
                 zf.write(mp4_path, f"{output_name}.mp4")
             else:
@@ -444,8 +460,14 @@ def main() -> None:
                 for f in depth_files:
                     zf.write(f, f"depth/{f.name}")
                 print(f"  depth/  ({len(depth_files)} files)")
-            zf.write(final_pgm, "map.pgm")
-            zf.write(final_yaml, "map.yaml")
+            if final_pgm is not None and final_pgm.is_file():
+                zf.write(final_pgm, "map.pgm")
+            else:
+                print("[WARN] No map.pgm included in ZIP (not generated).", file=sys.stderr)
+            if final_yaml is not None and final_yaml.is_file():
+                zf.write(final_yaml, "map.yaml")
+            else:
+                print("[WARN] No map.yaml included in ZIP (not generated).", file=sys.stderr)
         print(f"\n[DONE] {zip_path}")
         print(f"       positions.json | {output_name}.mp4 | map.pgm | map.yaml | camera_info.json | depth_camera_info.json | depth/*.png")
     else:
