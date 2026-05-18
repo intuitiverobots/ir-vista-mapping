@@ -27,6 +27,15 @@ interface ParamDef {
   value: string  // preset default as string
 }
 
+interface DlFile {
+  path: string
+  label: string
+  size: number
+  size_human: string
+  group: 'raw' | 'output'
+  is_dir: boolean
+}
+
 // ── API helpers ───────────────────────────────────────────────────────────
 
 async function apiGet<T>(path: string): Promise<T> {
@@ -275,6 +284,14 @@ export default function App() {
   const [pipelineSseUrl, setPipelineSseUrl] = useState<string | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
 
+  // ── Download state ──────────────────────────────────────────────
+  const [dlSessions, setDlSessions] = useState<string[]>([])
+  const [dlSession, setDlSession] = useState('')
+  const [dlFiles, setDlFiles] = useState<DlFile[]>([])
+  const [dlChecked, setDlChecked] = useState<Set<string>>(new Set())
+  const [dlLoading, setDlLoading] = useState(false)
+  const [dlZipping, setDlZipping] = useState(false)
+
   // ── Load configs and restore process states on mount ───────────
   const fetchSvos = () =>
     apiGet<{ svos: SvoFile[] }>('/api/svos')
@@ -512,6 +529,54 @@ export default function App() {
       setPipelineSseUrl(`/api/logs/pipeline?t=${Date.now()}`)
     } catch (err) {
       alert(`Failed to start pipeline: ${err instanceof Error ? err.message : err}`)
+    }
+  }
+
+  // ── Download handlers ──────────────────────────────────────────
+
+  const fetchDlSessions = () =>
+    apiGet<{ sessions: string[] }>('/api/sessions')
+      .then(d => setDlSessions(d.sessions))
+      .catch(console.error)
+
+  const fetchDlFiles = async (name: string) => {
+    if (!name) { setDlFiles([]); setDlChecked(new Set()); return }
+    setDlLoading(true)
+    try {
+      const data = await apiGet<{ files: DlFile[] }>(`/api/sessions/${encodeURIComponent(name)}/files`)
+      setDlFiles(data.files)
+      setDlChecked(new Set(data.files.map(f => f.path)))
+    } catch (err) {
+      toast.error(`Failed to fetch files: ${err instanceof Error ? err.message : err}`)
+    } finally {
+      setDlLoading(false)
+    }
+  }
+
+  const handleDownload = async () => {
+    if (!dlSession || dlChecked.size === 0) return
+    setDlZipping(true)
+    try {
+      const r = await fetch('/api/sessions/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: dlSession, paths: [...dlChecked] }),
+      })
+      if (!r.ok) {
+        const msg = await r.text().catch(() => r.statusText)
+        throw new Error(msg)
+      }
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${dlSession}.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      toast.error(`Download failed: ${err instanceof Error ? err.message : err}`)
+    } finally {
+      setDlZipping(false)
     }
   }
 
@@ -922,6 +987,122 @@ export default function App() {
             >
               ↓ Download {zipSession}.zip
             </a>
+          )}
+        </section>
+
+        {/* ──────────────────── Download Panel ─────────────────── */}
+        <section className="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-5">
+          <h2 className="text-lg font-semibold">Télécharger des données</h2>
+
+          {/* Session dropdown */}
+          <div className="space-y-1">
+            <label className="block text-xs text-gray-400">Session</label>
+            <select
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm
+                         focus:outline-none focus:border-blue-500"
+              value={dlSession}
+              onFocus={fetchDlSessions}
+              onChange={e => {
+                const name = e.target.value
+                setDlSession(name)
+                fetchDlFiles(name)
+              }}
+            >
+              <option value="">— sélectionner une session —</option>
+              {dlSessions.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+
+          {/* File list */}
+          {dlLoading && (
+            <p className="text-sm text-gray-400 animate-pulse">Chargement des fichiers…</p>
+          )}
+
+          {!dlLoading && dlFiles.length > 0 && (() => {
+            const rawFiles = dlFiles.filter(f => f.group === 'raw')
+            const outFiles = dlFiles.filter(f => f.group === 'output')
+            const totalSelected = dlFiles.filter(f => dlChecked.has(f.path)).reduce((a, f) => a + f.size, 0)
+            const humanTotal = (n: number) => {
+              if (n < 1024) return `${n} B`
+              if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+              if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+              return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+            }
+
+            const renderGroup = (label: string, files: DlFile[]) => {
+              if (files.length === 0) return null
+              const allChecked = files.every(f => dlChecked.has(f.path))
+              const someChecked = files.some(f => dlChecked.has(f.path))
+              const toggleAll = () => {
+                setDlChecked(prev => {
+                  const next = new Set(prev)
+                  if (allChecked) files.forEach(f => next.delete(f.path))
+                  else files.forEach(f => next.add(f.path))
+                  return next
+                })
+              }
+              return (
+                <div key={label} className="space-y-1">
+                  {/* Group header with select-all */}
+                  <div className="flex items-center gap-2 pb-1 border-b border-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={allChecked}
+                      ref={el => { if (el) el.indeterminate = !allChecked && someChecked }}
+                      onChange={toggleAll}
+                      className="h-4 w-4 rounded border-gray-600 accent-blue-500"
+                    />
+                    <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">{label}</span>
+                  </div>
+                  {/* File rows */}
+                  {files.map(f => (
+                    <label key={f.path} className="flex items-center gap-2 px-1 py-0.5 rounded hover:bg-gray-800 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={dlChecked.has(f.path)}
+                        onChange={e => {
+                          setDlChecked(prev => {
+                            const next = new Set(prev)
+                            if (e.target.checked) next.add(f.path)
+                            else next.delete(f.path)
+                            return next
+                          })
+                        }}
+                        className="h-4 w-4 flex-shrink-0 rounded border-gray-600 accent-blue-500"
+                      />
+                      <span className="flex-shrink-0 text-gray-500">{f.is_dir ? '📁' : '📄'}</span>
+                      <span className="flex-1 text-sm text-gray-200 truncate font-mono">{f.label}</span>
+                      <span className="text-xs text-gray-500 flex-shrink-0 tabular-nums">{f.size_human}</span>
+                    </label>
+                  ))}
+                </div>
+              )
+            }
+
+            return (
+              <div className="space-y-4">
+                {renderGroup('Données brutes (raw)', rawFiles)}
+                {renderGroup('Sorties pipeline (outputs)', outFiles)}
+
+                {/* Download button */}
+                <button
+                  onClick={handleDownload}
+                  disabled={dlZipping || dlChecked.size === 0}
+                  className="w-full bg-indigo-700 hover:bg-indigo-600 disabled:bg-gray-700
+                             rounded-xl py-2.5 text-sm font-medium transition-colors flex
+                             items-center justify-center gap-2"
+                >
+                  {dlZipping
+                    ? <><span className="animate-spin">⏳</span> Création du ZIP…</>
+                    : <>↓ Télécharger la sélection ({dlChecked.size} fichier{dlChecked.size !== 1 ? 's' : ''}, {humanTotal(totalSelected)})</>
+                  }
+                </button>
+              </div>
+            )
+          })()}
+
+          {!dlLoading && dlSession && dlFiles.length === 0 && (
+            <p className="text-sm text-gray-500">Aucun fichier trouvé pour cette session.</p>
           )}
         </section>
       </main>

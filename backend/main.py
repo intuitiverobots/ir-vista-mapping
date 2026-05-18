@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from .routers import audio, capture, pipeline
+from .routers import audio, capture, downloads, pipeline
 
 # ── Logging ───────────────────────────────────────────────────────────────
 
@@ -43,6 +43,7 @@ app = FastAPI(
 # API routers (must be included before static-file fallback mount)
 app.include_router(audio.router, prefix="/api", tags=["audio"])
 app.include_router(capture.router, prefix="/api", tags=["capture"])
+app.include_router(downloads.router, prefix="/api", tags=["downloads"])
 app.include_router(pipeline.router, prefix="/api", tags=["pipeline"])
 
 # ── Static files (built React SPA) ────────────────────────────────────────
