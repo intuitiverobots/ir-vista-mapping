@@ -157,6 +157,25 @@ function Select({
   )
 }
 
+// ── ZED resolution / FPS compatibility ──────────────────────────────────
+
+interface ZedResolution {
+  name: string
+  label: string   // display label
+  fps: number[]   // supported FPS values, descending
+}
+
+const ZED_RESOLUTIONS: ZedResolution[] = [
+  { name: 'HD2K',   label: 'HD2K   – 4416×1242 (Wide)',        fps: [15]             },
+  { name: 'HD1080', label: 'HD1080 – 3840×1080 (Wide)',        fps: [30, 15]         },
+  { name: 'HD720',  label: 'HD720  – 2560×720 (Extra Wide)',   fps: [60, 30, 15]     },
+  { name: 'VGA',    label: 'VGA    – 1344×376 (Extra Wide)',   fps: [100, 60, 30, 15] },
+]
+
+const ZED_RES_MAP: Record<string, ZedResolution> = Object.fromEntries(
+  ZED_RESOLUTIONS.map(r => [r.name, r])
+)
+
 // ── Pipeline step groups ──────────────────────────────────────────────────
 
 const GLOBAL_PARAM_KEYS = new Set(['trim_start', 'trim_end', 'depth_scale'])
@@ -289,7 +308,8 @@ function ParamField({
 export default function App() {
   // ── Capture state ──────────────────────────────────────────────
   const [sessionName, setSessionName] = useState('')
-  const [fps, setFps] = useState('15')
+  const [resolution, setResolution] = useState('HD720')
+  const [fps, setFps] = useState('60')
   const [imuWarmup, setImuWarmup] = useState('2.0')
   const [captureWait, setCaptureWait] = useState('0')
   const [showCaptureAdvanced, setShowCaptureAdvanced] = useState(false)
@@ -472,6 +492,7 @@ export default function App() {
     try {
       await apiPost('/api/record/start', {
         session_name: sessionName.trim(),
+        resolution,
         fps: parseInt(fps),
         imu_warmup: isNaN(parseFloat(imuWarmup)) ? 2.0 : parseFloat(imuWarmup),
         wait: isNaN(parseInt(captureWait)) ? 0 : parseInt(captureWait),
@@ -764,15 +785,24 @@ const handleDeletePreset = async () => {
           />
 
           <Select
+            label="Resolution"
+            value={resolution}
+            onChange={res => {
+              setResolution(res)
+              // Clamp FPS to the highest supported by the new resolution
+              const supported = ZED_RES_MAP[res].fps
+              if (!supported.includes(parseInt(fps))) setFps(String(supported[0]))
+            }}
+            disabled={isRecording}
+            options={ZED_RESOLUTIONS.map(r => ({ value: r.name, label: r.label }))}
+          />
+
+          <Select
             label="FPS"
             value={fps}
             onChange={setFps}
             disabled={isRecording}
-            options={[
-              { value: '15', label: '15 fps' },
-              { value: '30', label: '30 fps' },
-              { value: '60', label: '60 fps' },
-            ]}
+            options={ZED_RES_MAP[resolution].fps.map(f => ({ value: String(f), label: `${f} fps` }))}
           />
 
           {/* Advanced settings – capture */}
@@ -873,10 +903,10 @@ const handleDeletePreset = async () => {
           )}
         </section>
 
-        {/* ──────────────────── Pipeline Panel ─────────────────── */}
+        {/* ──────────────────── SLAM & Export Pipeline Panel ───── */}
         <section className="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-5">
           <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Pipeline</h2>
+            <h2 className="text-lg font-semibold">SLAM &amp; Export Pipeline</h2>
             {isPipelineRunning && (
               <span className="flex items-center gap-2 text-sm text-yellow-400 font-medium">
                 <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />

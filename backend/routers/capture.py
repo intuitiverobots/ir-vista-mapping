@@ -25,6 +25,7 @@ router = APIRouter()
 
 class RecordStartRequest(BaseModel):
     session_name: str = Field(..., min_length=1, description="Base name for the .svo2 file")
+    resolution: str = Field(default="HD720", description="Camera resolution (HD2K, HD1080, HD720, VGA)")
     fps: int = Field(default=15, ge=5, le=100, description="Recording frame rate")
     imu_warmup: float = Field(default=2.0, ge=0.0, description="IMU warm-up seconds before recording")
     wait: int = Field(default=0, ge=0, description="Delay in seconds before recording starts")
@@ -44,6 +45,7 @@ async def start_recording(body: RecordStartRequest):
         sys.executable, "-u",
         str(REPO_ROOT / "src" / "svo_recording.py"),
         "--output_svo_file", str(svo_path),
+        "--resolution", body.resolution,
         "--fps", str(body.fps),
         "--imu-warmup", str(body.imu_warmup),
         "--wait", str(body.wait),
