@@ -35,11 +35,20 @@ def handler(signal_received, frame):
 
 signal(SIGINT, handler)
 
+_RESOLUTION_MAP = {
+    "HD2K":   sl.RESOLUTION.HD2K,
+    "HD1080": sl.RESOLUTION.HD1080,
+    "HD720":  sl.RESOLUTION.HD720,
+    "VGA":    sl.RESOLUTION.VGA,
+}
+
 def main(opt):
 
     init = sl.InitParameters()
     init.depth_mode = sl.DEPTH_MODE.NONE # Set configuration parameters for the ZED
     init.async_image_retrieval = False; # This parameter can be used to record SVO in camera FPS even if the grab loop is running at a lower FPS (due to compute for ex.)
+    if opt.resolution is not None:
+        init.camera_resolution = _RESOLUTION_MAP[opt.resolution]
     if opt.fps is not None:
         init.camera_fps = opt.fps
 
@@ -69,17 +78,21 @@ def main(opt):
         exit(1)
 
     runtime = sl.RuntimeParameters()
-    print("SVO is Recording, use Ctrl-C to stop.") # Start recording SVO, stop with Ctrl-C command
+    print("SVO is Recording, use Ctrl-C to stop.")  # Start recording SVO, stop with Ctrl-C command
     frames_recorded = 0
+    LOG_INTERVAL = 10  # print every N frames
 
     while True:
-        if cam.grab(runtime) <= sl.ERROR_CODE.SUCCESS : # Check that a new image is successfully acquired
+        if cam.grab(runtime) <= sl.ERROR_CODE.SUCCESS:  # Check that a new image is successfully acquired
             frames_recorded += 1
-            print("Frame count: " + str(frames_recorded), end="\r")
+            if frames_recorded == 1 or frames_recorded % LOG_INTERVAL == 0:
+                print(f"Frame count: {frames_recorded}", flush=True)
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--output_svo_file', type=str, help='Path to the SVO file that will be written', required=True)
+    parser.add_argument('--resolution', type=str, default=None, choices=['HD2K', 'HD1080', 'HD720', 'VGA'],
+                        help='Camera resolution (HD2K, HD1080, HD720, VGA). Default: camera native resolution.')
     parser.add_argument('--fps', type=int, default=None, choices=[15, 30, 60, 100],
                         help='Recording frame rate (15, 30, 60 or 100 fps). Default: camera native FPS.')
     parser.add_argument('--wait', type=int, default=0, metavar='SEC',
