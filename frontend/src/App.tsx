@@ -62,6 +62,28 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return r.json() as Promise<T>
 }
 
+async function apiPut<T>(path: string, body?: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: 'PUT',
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  if (!r.ok) {
+    const msg = await r.text().catch(() => r.statusText)
+    throw new Error(msg)
+  }
+  return r.json() as Promise<T>
+}
+
+async function apiDelete<T>(path: string): Promise<T> {
+  const r = await fetch(path, { method: 'DELETE' })
+  if (!r.ok) {
+    const msg = await r.text().catch(() => r.statusText)
+    throw new Error(msg)
+  }
+  return r.json() as Promise<T>
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 function fmtTime(s: number): string {
@@ -195,6 +217,23 @@ const STEP_GROUPS: StepGroup[] = [
   },
 ]
 
+// ── All known param definitions (used for new preset creation) ────────────────
+
+const ALL_KNOWN_PARAMS: ParamDef[] = [
+  { key: 'side',              cli: '--side',              type: 'choice:left,right',         label: 'side (camera side)',              value: 'right'  },
+  { key: 'render',            cli: '--render',            type: 'choice:cloud,mesh,texture',  label: 'render (3D export mode)',          value: 'cloud'  },
+  { key: 'quality',           cli: '--quality',           type: 'int',                        label: 'quality (ZED depth quality 0-6)', value: '5'      },
+  { key: 'superpoint',        cli: '--superpoint',        type: 'bool',                       label: 'superpoint (SuperPoint features)', value: 'false'  },
+  { key: 'min_z',             cli: '--min-z',             type: 'float',                      label: 'min_z (min height, m)',            value: '0.0'    },
+  { key: 'max_z',             cli: '--max-z',             type: 'float',                      label: 'max_z (max height, m)',            value: '2.0'    },
+  { key: 'resolution',        cli: '--resolution',        type: 'float',                      label: 'resolution (cell size, m/px)',     value: '0.05'   },
+  { key: 'depth_scale',       cli: '--depth-scale',       type: 'float',                      label: 'depth_scale (scale factor)',       value: '0.75'   },
+  { key: 'depth_compression', cli: '--depth-compression', type: 'int',                        label: 'depth_compression (PNG 0-9)',      value: '5'      },
+  { key: 'trim_start',        cli: '--trim-start',        type: 'float',                      label: 'trim_start (skip start, s)',       value: '0.0'    },
+  { key: 'trim_end',          cli: '--trim-end',          type: 'float',                      label: 'trim_end (skip end, s)',           value: '0.0'    },
+  { key: 'regen_grid',        cli: '--regen-grid',        type: 'bool',                       label: 'regen_grid (rebuild grid only)',   value: 'false'  },
+]
+
 function ParamField({
   p,
   value,
@@ -290,6 +329,7 @@ export default function App() {
   const [zipDownloading, setZipDownloading] = useState(false)
   const [pipelineSseUrl, setPipelineSseUrl] = useState<string | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
+  const [extraCliArgs, setExtraCliArgs] = useState('')
 
   // ── Download state ──────────────────────────────────────────────
   const [dlSessions, setDlSessions] = useState<DlSession[]>([])
@@ -298,6 +338,12 @@ export default function App() {
   const [dlChecked, setDlChecked] = useState<Set<string>>(new Set())
   const [dlLoading, setDlLoading] = useState(false)
   const [dlZipping, setDlZipping] = useState(false)
+
+  const [showNewPreset, setShowNewPreset] = useState(false)
+  const [newPresetName, setNewPresetName] = useState('')
+  const [newPresetParams, setNewPresetParams] = useState<Record<string, string>>({})
+  const [newPresetRtabmap, setNewPresetRtabmap] = useState<{ k: string; v: string }[]>([])
+  const [newPresetSaving, setNewPresetSaving] = useState(false)
 
   // ── Load configs and restore process states on mount ───────────
   const fetchSvos = () =>
@@ -526,6 +572,9 @@ export default function App() {
           extra_args.push(p.cli, val)
         }
       }
+      if (extraCliArgs.trim()) {
+        extra_args.push(...extraCliArgs.trim().split(/\s+/))
+      }
       const payload: PipelinePayload = {
         config: selectedConfig,
         svo_stem: selectedSvo,
@@ -540,6 +589,46 @@ export default function App() {
       alert(`Failed to start pipeline: ${err instanceof Error ? err.message : err}`)
     }
   }
+
+  const hasUnsavedChanges = Boolean(selectedConfig) &&
+  presetParams.some(p => (paramValues[p.key] ?? p.value) !== p.value)
+
+const handleUpdatePreset = async () => {
+  if (!selectedConfig) return
+  try {
+    const values: Record<string, string> = {}
+    const rtabmap: Record<string, string> = {}
+    for (const p of presetParams) {
+      const val = paramValues[p.key] ?? p.value
+      if (p.key.startsWith('rtabmap.')) rtabmap[p.key.slice(8)] = val
+      else values[p.key] = val
+    }
+    await apiPut(`/api/presets/${encodeURIComponent(selectedConfig)}`, { values, rtabmap })
+    // Reload to reset unsaved-changes indicator
+    const data = await apiGet<{ params: ParamDef[] }>(`/api/presets/${selectedConfig}`)
+    setPresetParams(data.params)
+    const defaults: Record<string, string> = {}
+    for (const p of data.params) defaults[p.key] = p.value
+    setParamValues(defaults)
+    toast.success(`Preset "${selectedConfig}" updated.`)
+  } catch (err) {
+    toast.error(`Update failed: ${err instanceof Error ? err.message : err}`)
+  }
+}
+
+const handleDeletePreset = async () => {
+  if (!selectedConfig) return
+  if (!window.confirm(`Delete preset "${selectedConfig}"? This cannot be undone.`)) return
+  try {
+    await apiDelete(`/api/presets/${encodeURIComponent(selectedConfig)}`)
+    toast.success(`Preset "${selectedConfig}" deleted.`)
+    setSelectedConfig('')
+    const data = await apiGet<{ configs: string[] }>('/api/configs')
+    setConfigs(data.configs)
+  } catch (err) {
+    toast.error(`Delete failed: ${err instanceof Error ? err.message : err}`)
+  }
+}
 
   // ── Download handlers ──────────────────────────────────────────
 
@@ -590,6 +679,46 @@ export default function App() {
   }
 
   // ── Derived ────────────────────────────────────────────────────
+  const handleOpenNewPreset = () => {
+    const initValues: Record<string, string> = {}
+    for (const p of ALL_KNOWN_PARAMS) {
+      initValues[p.key] = paramValues[p.key] ?? p.value
+    }
+    const rtab = presetParams
+      .filter(p => p.key.startsWith('rtabmap.'))
+      .map(p => ({ k: p.key.slice(8), v: paramValues[p.key] ?? p.value }))
+    setNewPresetName('')
+    setNewPresetParams(initValues)
+    setNewPresetRtabmap(rtab)
+    setShowNewPreset(true)
+  }
+
+  const handleSavePreset = async () => {
+    const name = newPresetName.trim()
+    if (!name) return
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      toast.error('Preset name must be alphanumeric (underscores and hyphens allowed)')
+      return
+    }
+    setNewPresetSaving(true)
+    try {
+      const rtabmap: Record<string, string> = {}
+      for (const row of newPresetRtabmap) {
+        if (row.k.trim()) rtabmap[row.k.trim()] = row.v
+      }
+      await apiPost('/api/presets', { name, values: newPresetParams, rtabmap })
+      toast.success(`Preset "${name}" created.`)
+      setShowNewPreset(false)
+      const data = await apiGet<{ configs: string[] }>('/api/configs')
+      setConfigs(data.configs)
+      setSelectedConfig(name)
+    } catch (err) {
+      toast.error(`Save failed: ${err instanceof Error ? err.message : err}`)
+    } finally {
+      setNewPresetSaving(false)
+    }
+  }
+
   const isRecording = recordStatus === 'recording'
   const isPipelineRunning = pipelineStatus === 'running'
   const zipSession = outputName.trim() || selectedSvo
@@ -785,17 +914,57 @@ export default function App() {
 
           {/* Preset dropdown */}
           <div className="space-y-1">
-            <label className="block text-xs text-gray-400">Preset</label>
-            <select
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm
-                         focus:outline-none focus:border-blue-500 disabled:opacity-40"
-              value={selectedConfig}
-              onChange={e => setSelectedConfig(e.target.value)}
-              disabled={isPipelineRunning}
-            >
-              <option value="">— select —</option>
-              {configs.map(c => <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
-            </select>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <label className="block text-xs text-gray-400">Preset</label>
+                {hasUnsavedChanges && (
+                  <span className="text-xs text-yellow-400 font-medium">● unsaved changes</span>
+                )}
+              </div>
+              <button
+                onClick={handleOpenNewPreset}
+                disabled={isPipelineRunning}
+                className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-40 transition-colors"
+              >
+                + New preset
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <select
+                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm
+                          focus:outline-none focus:border-blue-500 disabled:opacity-40"
+                value={selectedConfig}
+                onChange={e => setSelectedConfig(e.target.value)}
+                disabled={isPipelineRunning}
+              >
+                <option value="">— select —</option>
+                {configs.map(c => <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
+              </select>
+              {selectedConfig && (
+                <>
+                  {hasUnsavedChanges && (
+                    <button
+                      onClick={handleUpdatePreset}
+                      disabled={isPipelineRunning}
+                      title="Save current values into this preset"
+                      className="px-2 py-1 rounded-lg text-xs bg-yellow-700 hover:bg-yellow-600
+                                disabled:opacity-40 transition-colors whitespace-nowrap"
+                    >
+                      ↑ Update
+                    </button>
+                  )}
+                  <button
+                    onClick={handleDeletePreset}
+                    disabled={isPipelineRunning}
+                    title="Delete this preset"
+                    className="px-2 py-1 rounded-lg text-xs text-red-400 hover:text-red-300
+                              border border-red-800 hover:border-red-600 disabled:opacity-40 transition-colors"
+                  >
+                    ✕
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
           {/* Advanced parameters — step accordions */}
@@ -979,9 +1148,20 @@ export default function App() {
                   )
                 })}
 
+                {/* Extra CLI arguments */}
+                <Input
+                  label="Extra arguments"
+                  value={extraCliArgs}
+                  onChange={setExtraCliArgs}
+                  placeholder="e.g. --trim-start 3 --quality 4"
+                  disabled={isPipelineRunning}
+                />
+
               </div>
             )}
           </div>
+
+          
 
           {/* Launch / Kill buttons */}
           <div className="flex gap-2">
@@ -1193,6 +1373,105 @@ export default function App() {
           )}
         </section>
       </main>
+
+      {/* ────────────────── New Preset Modal ────────────────── */}
+      {showNewPreset && (
+        <div
+          className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+          onClick={e => { if (e.target === e.currentTarget) setShowNewPreset(false) }}
+        >
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            {/* Modal header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
+              <h3 className="text-lg font-semibold">New preset</h3>
+              <button
+                onClick={() => setShowNewPreset(false)}
+                className="text-gray-400 hover:text-white text-xl leading-none"
+              >✕</button>
+            </div>
+            {/* Modal body */}
+            <div className="overflow-y-auto px-6 py-5 space-y-5 flex-1">
+              <Input
+                label="Preset name"
+                value={newPresetName}
+                onChange={setNewPresetName}
+                placeholder="e.g. corridor"
+                disabled={newPresetSaving}
+              />
+              {/* Pipeline parameters */}
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Pipeline parameters</p>
+                <div className="grid grid-cols-2 gap-3">
+                  {ALL_KNOWN_PARAMS.map(p => (
+                    <ParamField
+                      key={p.key} p={p}
+                      value={newPresetParams[p.key] ?? p.value}
+                      onChange={v => setNewPresetParams(prev => ({ ...prev, [p.key]: v }))}
+                      disabled={newPresetSaving}
+                    />
+                  ))}
+                </div>
+              </div>
+              {/* RTAB-Map parameters */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">RTAB-Map parameters</p>
+                  <button
+                    onClick={() => setNewPresetRtabmap(prev => [...prev, { k: '', v: '' }])}
+                    disabled={newPresetSaving}
+                    className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-40 transition-colors"
+                  >+ Add row</button>
+                </div>
+                {newPresetRtabmap.length === 0 && (
+                  <p className="text-xs text-gray-500">No RTAB-Map parameters — click “+ Add row” to add one.</p>
+                )}
+                <div className="space-y-1.5">
+                  {newPresetRtabmap.map((row, i) => (
+                    <div key={i} className="flex gap-2 items-center">
+                      <input
+                        value={row.k}
+                        onChange={e => setNewPresetRtabmap(prev => prev.map((r, j) => j === i ? { ...r, k: e.target.value } : r))}
+                        placeholder="Optimizer/Strategy"
+                        disabled={newPresetSaving}
+                        className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs font-mono
+                                   focus:outline-none focus:border-blue-500 disabled:opacity-40"
+                      />
+                      <input
+                        value={row.v}
+                        onChange={e => setNewPresetRtabmap(prev => prev.map((r, j) => j === i ? { ...r, v: e.target.value } : r))}
+                        placeholder="value"
+                        disabled={newPresetSaving}
+                        className="w-28 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs font-mono
+                                   focus:outline-none focus:border-blue-500 disabled:opacity-40"
+                      />
+                      <button
+                        onClick={() => setNewPresetRtabmap(prev => prev.filter((_, j) => j !== i))}
+                        disabled={newPresetSaving}
+                        className="text-gray-500 hover:text-red-400 disabled:opacity-40 transition-colors px-1"
+                      >✕</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            {/* Modal footer */}
+            <div className="flex gap-3 justify-end px-6 py-4 border-t border-gray-800 flex-shrink-0">
+              <button
+                onClick={() => setShowNewPreset(false)}
+                disabled={newPresetSaving}
+                className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:text-white transition-colors disabled:opacity-40"
+              >Cancel</button>
+              <button
+                onClick={handleSavePreset}
+                disabled={newPresetSaving || !newPresetName.trim()}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 rounded-xl text-sm font-medium transition-colors"
+              >
+                {newPresetSaving ? 'Saving…' : 'Save preset'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <footer className="border-t border-gray-800 mt-6 py-8">

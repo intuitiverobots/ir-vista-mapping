@@ -12,6 +12,7 @@ GET  /api/download/{name}   - serve the generated ZIP for download
 import asyncio
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -123,6 +124,119 @@ async def get_preset_params(name: str):
         })
 
     return {"params": params}
+
+
+# ── Preset creation ───────────────────────────────────────────────────────
+
+_SAFE_PRESET_NAME = re.compile(r'^[A-Za-z0-9_\-]+$')
+_PARAM_TYPES: dict[str, type] = {
+    "min_z": float, "max_z": float, "resolution": float,
+    "depth_scale": float, "trim_start": float, "trim_end": float,
+    "depth_compression": int, "quality": int,
+}
+_PARAM_BOOLS = {"superpoint", "regen_grid"}
+
+
+class PresetCreateRequest(BaseModel):
+    name: str
+    values: dict[str, str] = Field(default_factory=dict)
+    rtabmap: dict[str, str] = Field(default_factory=dict)
+
+
+@router.post("/presets", summary="Create a new preset YAML", status_code=201)
+async def create_preset(body: PresetCreateRequest):
+    if not _SAFE_PRESET_NAME.match(body.name):
+        raise HTTPException(400, "Invalid preset name (alphanumeric, underscores and hyphens only)")
+    preset_path = REPO_ROOT / "config" / "presets" / f"{body.name}.yaml"
+    if preset_path.is_file():
+        raise HTTPException(409, f"Preset '{body.name}' already exists")
+
+    data: dict = {}
+    for k, v in body.values.items():
+        if k in _PARAM_BOOLS:
+            data[k] = (v == "true")
+        elif k in _PARAM_TYPES:
+            try:
+                data[k] = _PARAM_TYPES[k](v)
+            except (ValueError, TypeError):
+                data[k] = v
+        elif k.strip():
+            data[k] = v
+
+    if body.rtabmap:
+        rtab: dict = {}
+        for k, v in body.rtabmap.items():
+            if not k.strip():
+                continue
+            try:
+                rtab[k] = int(v)
+            except ValueError:
+                try:
+                    rtab[k] = float(v)
+                except ValueError:
+                    rtab[k] = v
+        if rtab:
+            data["rtabmap"] = rtab
+
+    with open(preset_path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    return {"status": "created", "name": body.name}
+
+class PresetUpdateRequest(BaseModel):
+    values: dict[str, str] = Field(default_factory=dict)
+    rtabmap: dict[str, str] = Field(default_factory=dict)
+
+
+@router.put("/presets/{name}", summary="Update an existing preset YAML")
+async def update_preset(name: str, body: PresetUpdateRequest):
+    if not _SAFE_PRESET_NAME.match(name):
+        raise HTTPException(400, "Invalid preset name")
+    preset_path = REPO_ROOT / "config" / "presets" / f"{name}.yaml"
+    if not preset_path.is_file():
+        raise HTTPException(404, f"Preset not found: {name}")
+
+    data: dict = {}
+    for k, v in body.values.items():
+        if k in _PARAM_BOOLS:
+            data[k] = (v == "true")
+        elif k in _PARAM_TYPES:
+            try:
+                data[k] = _PARAM_TYPES[k](v)
+            except (ValueError, TypeError):
+                data[k] = v
+        elif k.strip():
+            data[k] = v
+
+    if body.rtabmap:
+        rtab: dict = {}
+        for k, v in body.rtabmap.items():
+            if not k.strip():
+                continue
+            try:
+                rtab[k] = int(v)
+            except ValueError:
+                try:
+                    rtab[k] = float(v)
+                except ValueError:
+                    rtab[k] = v
+        if rtab:
+            data["rtabmap"] = rtab
+
+    with open(preset_path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return {"status": "updated", "name": name}
+
+
+@router.delete("/presets/{name}", summary="Delete a preset YAML")
+async def delete_preset(name: str):
+    if not _SAFE_PRESET_NAME.match(name):
+        raise HTTPException(400, "Invalid preset name")
+    preset_path = REPO_ROOT / "config" / "presets" / f"{name}.yaml"
+    if not preset_path.is_file():
+        raise HTTPException(404, f"Preset not found: {name}")
+    preset_path.unlink()
+    return {"status": "deleted", "name": name}
 
 
 @router.get("/status", summary="Current process states")
