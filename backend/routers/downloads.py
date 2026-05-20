@@ -179,3 +179,31 @@ async def download_selected(body: DownloadRequest):
         media_type="application/zip",
         background=BackgroundTask(tmp_path.unlink, missing_ok=True),
     )
+
+
+@router.get("/sessions/file", summary="Download a single file directly (no ZIP)")
+async def download_single_file(session: str, path: str):
+    if not _SAFE_NAME.match(session):
+        raise HTTPException(400, "Invalid session name")
+
+    allowed_prefixes = (
+        str(_RAW_DIR.resolve()) + "/",
+        str((_OUTPUTS_DIR / session).resolve()) + "/",
+    )
+
+    try:
+        p = Path(path).resolve()
+    except Exception:
+        raise HTTPException(400, f"Invalid path: {path}")
+
+    if not any(str(p).startswith(pfx) for pfx in allowed_prefixes):
+        raise HTTPException(400, f"Path not allowed: {path}")
+
+    if not p.is_file():
+        raise HTTPException(404, f"File not found: {path}")
+
+    return FileResponse(
+        path=str(p),
+        filename=p.name,
+        media_type="application/octet-stream",
+    )

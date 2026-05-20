@@ -241,7 +241,7 @@ const STEP_GROUPS: StepGroup[] = [
 const ALL_KNOWN_PARAMS: ParamDef[] = [
   { key: 'side',              cli: '--side',              type: 'choice:left,right',         label: 'side (camera side)',              value: 'right'  },
   { key: 'render',            cli: '--render',            type: 'choice:cloud,mesh,texture',  label: 'render (3D export mode)',          value: 'cloud'  },
-  { key: 'quality',           cli: '--quality',           type: 'int',                        label: 'quality (ZED depth quality 0-6)', value: '5'      },
+  { key: 'quality',           cli: '--quality',           type: 'int',                        label: 'quality (ZED depth mode)', value: '5'      },
   { key: 'superpoint',        cli: '--superpoint',        type: 'bool',                       label: 'superpoint (SuperPoint features)', value: 'false'  },
   { key: 'min_z',             cli: '--min-z',             type: 'float',                      label: 'min_z (min height, m)',            value: '0.0'    },
   { key: 'max_z',             cli: '--max-z',             type: 'float',                      label: 'max_z (max height, m)',            value: '2.0'    },
@@ -252,6 +252,26 @@ const ALL_KNOWN_PARAMS: ParamDef[] = [
   { key: 'trim_end',          cli: '--trim-end',          type: 'float',                      label: 'trim_end (skip end, s)',           value: '0.0'    },
   { key: 'regen_grid',        cli: '--regen-grid',        type: 'bool',                       label: 'regen_grid (rebuild grid only)',   value: 'false'  },
 ]
+
+// ── Labeled integer enum params ─────────────────────────────────────────
+
+const PARAM_INT_ENUMS: Record<string, Record<string, string>> = {
+  quality: {
+    '0': 'NONE',
+    '1': 'Performance (deprecated)',
+    '2': 'Quality (deprecated)',
+    '3': 'Ultra (deprecated)',
+    '4': 'Neural',
+    '5': 'Neural Light',
+    '6': 'Neural+',
+  },
+  'rtabmap.Optimizer/Strategy': {
+    '0': 'TORO',
+    '1': 'g2o',
+    '2': 'GTSAM',
+    '3': 'Ceres',
+  },
+}
 
 function ParamField({
   p,
@@ -277,6 +297,17 @@ function ParamField({
         />
         <label htmlFor={`param-${p.key}`} className="text-xs text-gray-300">{p.label}</label>
       </div>
+    )
+  }
+  if (p.type === 'int' && PARAM_INT_ENUMS[p.key]) {
+    return (
+      <Select
+        label={p.label}
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        options={Object.entries(PARAM_INT_ENUMS[p.key]).map(([v, l]) => ({ value: v, label: `${v} – ${l}` }))}
+      />
     )
   }
   if (p.type.startsWith('choice:')) {
@@ -320,7 +351,6 @@ export default function App() {
   const [recordSseUrl, setRecordSseUrl] = useState<string | null>(null)
   const startTimeRef = useRef<number>(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const recordLogEndRef = useRef<HTMLDivElement>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
 
@@ -348,7 +378,8 @@ export default function App() {
   const [zipReady, setZipReady] = useState(false)
   const [zipDownloading, setZipDownloading] = useState(false)
   const [pipelineSseUrl, setPipelineSseUrl] = useState<string | null>(null)
-  const logEndRef = useRef<HTMLDivElement>(null)
+  const recordLogContainerRef = useRef<HTMLDivElement>(null)
+  const logContainerRef = useRef<HTMLDivElement>(null)
   const [extraCliArgs, setExtraCliArgs] = useState('')
 
   // ── Download state ──────────────────────────────────────────────
@@ -408,13 +439,19 @@ export default function App() {
       .catch(console.error)
   }, [selectedConfig])
 
-  // ── Auto-scroll logs ───────────────────────────────────────────
+  // ── Auto-scroll logs (only if already at bottom, scoped to container) ───
   useEffect(() => {
-    recordLogEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = recordLogContainerRef.current
+    if (!el) return
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+    if (isAtBottom) el.scrollTop = el.scrollHeight
   }, [recordLogs])
 
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const el = logContainerRef.current
+    if (!el) return
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+    if (isAtBottom) el.scrollTop = el.scrollHeight
   }, [logs])
 
   // ── SSE: record ────────────────────────────────────────────────
@@ -676,10 +713,33 @@ const handleDeletePreset = async () => {
     if (!dlSession || dlChecked.size === 0) return
     setDlZipping(true)
     try {
+      const paths = [...dlChecked]
+      // Single non-directory file → direct download, no ZIP
+      if (paths.length === 1) {
+        const single = dlFiles.find(f => f.path === paths[0] && !f.is_dir)
+        if (single) {
+          const r = await fetch(
+            `/api/sessions/file?session=${encodeURIComponent(dlSession)}&path=${encodeURIComponent(paths[0])}`
+          )
+          if (!r.ok) {
+            const msg = await r.text().catch(() => r.statusText)
+            throw new Error(msg)
+          }
+          const blob = await r.blob()
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = single.label
+          a.click()
+          URL.revokeObjectURL(url)
+          return
+        }
+      }
+      // Multiple files or single directory → ZIP
       const r = await fetch('/api/sessions/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: dlSession, paths: [...dlChecked] }),
+        body: JSON.stringify({ session: dlSession, paths }),
       })
       if (!r.ok) {
         const msg = await r.text().catch(() => r.statusText)
@@ -882,7 +942,7 @@ const handleDeletePreset = async () => {
 
           {/* Record log console */}
           {recordLogs.length > 0 && (
-            <div className="log-console bg-gray-950 border border-gray-800 rounded-xl p-3 h-40
+            <div ref={recordLogContainerRef} className="log-console bg-gray-950 border border-gray-800 rounded-xl p-3 h-40
                             overflow-y-auto font-mono text-xs leading-relaxed">
               {recordLogs.map((line, i) => (
                 <div
@@ -898,7 +958,6 @@ const handleDeletePreset = async () => {
                   {line}
                 </div>
               ))}
-              <div ref={recordLogEndRef} />
             </div>
           )}
         </section>
@@ -1215,7 +1274,7 @@ const handleDeletePreset = async () => {
 
           {/* Log console */}
           {logs.length > 0 && (
-            <div className="log-console bg-gray-950 border border-gray-800 rounded-xl p-3 h-60
+            <div ref={logContainerRef} className="log-console bg-gray-950 border border-gray-800 rounded-xl p-3 h-60
                             overflow-y-auto font-mono text-xs leading-relaxed">
               {logs.map((line, i) => (
                 <div
@@ -1233,7 +1292,6 @@ const handleDeletePreset = async () => {
                   {line}
                 </div>
               ))}
-              <div ref={logEndRef} />
             </div>
           )}
 
@@ -1361,6 +1419,9 @@ const handleDeletePreset = async () => {
               )
             }
 
+            const singlePath = dlChecked.size === 1 ? [...dlChecked][0] : null
+            const singleFileDef = singlePath ? dlFiles.find(f => f.path === singlePath && !f.is_dir) : undefined
+
             return (
               <div className="space-y-4">
                 {/* Global select/deselect all */}
@@ -1390,8 +1451,10 @@ const handleDeletePreset = async () => {
                              items-center justify-center gap-2"
                 >
                   {dlZipping
-                    ? <><span className="animate-spin">⏳</span> Building ZIP…</>
-                    : <>↓ Download selection ({dlChecked.size} file{dlChecked.size !== 1 ? 's' : ''}, {humanTotal(totalSelected)})</>
+                    ? <><span className="animate-spin">⏳</span> {singleFileDef ? 'Downloading…' : 'Building ZIP…'}</>
+                    : singleFileDef
+                      ? <>↓ Download {singleFileDef.label} ({humanTotal(totalSelected)})</>
+                      : <>↓ Download selection ({dlChecked.size} file{dlChecked.size !== 1 ? 's' : ''}, {humanTotal(totalSelected)})</>
                   }
                 </button>
               </div>

@@ -94,7 +94,7 @@ async def get_preset_params(name: str):
         ("depth_compression", "--depth-compression", "int",                     "depth_compression (PNG level 0-9)"),
         ("render",            "--render",            "choice:cloud,mesh,texture","render (3D export mode)"),
         ("superpoint",        "--superpoint",        "bool",                    "superpoint (SuperPoint features)"),
-        ("quality",           "--quality",           "int",                     "quality (ZED depth quality 0-6)"),
+        ("quality",           "--quality",           "int",                     "quality (ZED depth mode)"),
         ("trim_start",        "--trim-start",        "float",                   "trim_start (skip start, s)"),
         ("trim_end",          "--trim-end",          "float",                   "trim_end (skip end, s)"),
         ("regen_grid",        "--regen-grid",        "bool",                    "regen_grid (rebuild grid only)"),
