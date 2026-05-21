@@ -126,7 +126,7 @@ async def get_preset_params(name: str):
     return {"params": params}
 
 
-# ── Preset creation ───────────────────────────────────────────────────────
+# ── Preset helpers ───────────────────────────────────────────────────────
 
 _SAFE_PRESET_NAME = re.compile(r'^[A-Za-z0-9_\-]+$')
 _PARAM_TYPES: dict[str, type] = {
@@ -137,10 +137,60 @@ _PARAM_TYPES: dict[str, type] = {
 _PARAM_BOOLS = {"superpoint", "regen_grid"}
 
 
-class PresetCreateRequest(BaseModel):
-    name: str
+class PresetBase(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
     rtabmap: dict[str, str] = Field(default_factory=dict)
+
+
+class PresetCreateRequest(PresetBase):
+    name: str
+
+
+class PresetUpdateRequest(PresetBase):
+    pass
+
+
+def _build_preset_data(payload: PresetBase) -> dict:
+    """Convert string-valued frontend payload into a typed YAML-ready dict."""
+    data: dict = {}
+
+    for k, v in payload.values.items():
+        if not k.strip():
+            continue
+        if k in _PARAM_BOOLS:
+            data[k] = (v == "true")
+        elif k in _PARAM_TYPES:
+            try:
+                data[k] = _PARAM_TYPES[k](v)
+            except (ValueError, TypeError):
+                data[k] = v
+        else:
+            data[k] = v
+
+    if payload.rtabmap:
+        rtab: dict = {}
+        for k, v in payload.rtabmap.items():
+            if not k.strip():
+                continue
+            try:
+                rtab[k] = int(v)
+            except ValueError:
+                try:
+                    rtab[k] = float(v)
+                except ValueError:
+                    rtab[k] = v
+        if rtab:
+            data["rtabmap"] = rtab
+
+    return data
+
+
+def _save_preset_to_disk(preset_path: Path, payload: PresetBase) -> None:
+    """Write a preset YAML file from a validated payload."""
+    data = _build_preset_data(payload)
+    preset_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(preset_path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
 
 @router.post("/presets", summary="Create a new preset YAML", status_code=201)
@@ -150,42 +200,8 @@ async def create_preset(body: PresetCreateRequest):
     preset_path = REPO_ROOT / "config" / "presets" / f"{body.name}.yaml"
     if preset_path.is_file():
         raise HTTPException(409, f"Preset '{body.name}' already exists")
-
-    data: dict = {}
-    for k, v in body.values.items():
-        if k in _PARAM_BOOLS:
-            data[k] = (v == "true")
-        elif k in _PARAM_TYPES:
-            try:
-                data[k] = _PARAM_TYPES[k](v)
-            except (ValueError, TypeError):
-                data[k] = v
-        elif k.strip():
-            data[k] = v
-
-    if body.rtabmap:
-        rtab: dict = {}
-        for k, v in body.rtabmap.items():
-            if not k.strip():
-                continue
-            try:
-                rtab[k] = int(v)
-            except ValueError:
-                try:
-                    rtab[k] = float(v)
-                except ValueError:
-                    rtab[k] = v
-        if rtab:
-            data["rtabmap"] = rtab
-
-    with open(preset_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-
+    _save_preset_to_disk(preset_path, body)
     return {"status": "created", "name": body.name}
-
-class PresetUpdateRequest(BaseModel):
-    values: dict[str, str] = Field(default_factory=dict)
-    rtabmap: dict[str, str] = Field(default_factory=dict)
 
 
 @router.put("/presets/{name}", summary="Update an existing preset YAML")
@@ -195,36 +211,7 @@ async def update_preset(name: str, body: PresetUpdateRequest):
     preset_path = REPO_ROOT / "config" / "presets" / f"{name}.yaml"
     if not preset_path.is_file():
         raise HTTPException(404, f"Preset not found: {name}")
-
-    data: dict = {}
-    for k, v in body.values.items():
-        if k in _PARAM_BOOLS:
-            data[k] = (v == "true")
-        elif k in _PARAM_TYPES:
-            try:
-                data[k] = _PARAM_TYPES[k](v)
-            except (ValueError, TypeError):
-                data[k] = v
-        elif k.strip():
-            data[k] = v
-
-    if body.rtabmap:
-        rtab: dict = {}
-        for k, v in body.rtabmap.items():
-            if not k.strip():
-                continue
-            try:
-                rtab[k] = int(v)
-            except ValueError:
-                try:
-                    rtab[k] = float(v)
-                except ValueError:
-                    rtab[k] = v
-        if rtab:
-            data["rtabmap"] = rtab
-
-    with open(preset_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    _save_preset_to_disk(preset_path, body)
     return {"status": "updated", "name": name}
 
 

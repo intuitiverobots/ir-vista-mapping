@@ -1,45 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
 import toast, { Toaster } from 'react-hot-toast'
-
-// ── Types ─────────────────────────────────────────────────────────────────
-
-type RecordStatus = 'idle' | 'recording' | 'done' | 'error'
-type PipelineStatus = 'idle' | 'running' | 'done' | 'error'
-
-interface SvoFile {
-  name: string
-  date: string
-}
-
-interface PipelinePayload {
-  config: string
-  svo_stem: string
-  output_name: string
-  map_choice: 1 | 2
-  extra_args: string[]
-}
-
-interface ParamDef {
-  key: string
-  cli: string
-  type: string   // "float" | "int" | "str" | "bool" | "choice:a,b,c"
-  label: string
-  value: string  // preset default as string
-}
-
-interface DlSession {
-  name: string
-  date: string
-}
-
-interface DlFile {
-  path: string
-  label: string
-  size: number
-  size_human: string
-  group: 'raw' | 'output'
-  is_dir: boolean
-}
+import type { RecordStatus, PipelineStatus, SvoFile, PipelinePayload, ParamDef, DlSession, DlFile } from './types'
+import { Input } from './components/Input'
+import { Select } from './components/Select'
+import { ParamField } from './components/ParamField'
+import { useLogStream } from './hooks/useLogStream'
 
 // ── API helpers ───────────────────────────────────────────────────────────
 
@@ -92,70 +57,7 @@ function fmtTime(s: number): string {
   return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
 }
 
-// ── Small UI primitives ───────────────────────────────────────────────────
 
-function Input({
-  label,
-  value,
-  onChange,
-  placeholder,
-  disabled,
-  type = 'text',
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  placeholder?: string
-  disabled?: boolean
-  type?: string
-}) {
-  return (
-    <div className="space-y-1">
-      <label className="block text-xs text-gray-400">{label}</label>
-      <input
-        type={type}
-        step="any"
-        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm
-                   focus:outline-none focus:border-blue-500 disabled:opacity-40"
-        placeholder={placeholder}
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        disabled={disabled}
-      />
-    </div>
-  )
-}
-
-function Select({
-  label,
-  value,
-  onChange,
-  options,
-  disabled,
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  options: { value: string; label: string }[]
-  disabled?: boolean
-}) {
-  return (
-    <div className="space-y-1">
-      <label className="block text-xs text-gray-400">{label}</label>
-      <select
-        className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm
-                   focus:outline-none focus:border-blue-500 disabled:opacity-40"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        disabled={disabled}
-      >
-        {options.map(o => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
-    </div>
-  )
-}
 
 // ── ZED resolution / FPS compatibility ──────────────────────────────────
 
@@ -253,86 +155,7 @@ const ALL_KNOWN_PARAMS: ParamDef[] = [
   { key: 'regen_grid',        cli: '--regen-grid',        type: 'bool',                       label: 'regen_grid (rebuild grid only)',   value: 'false'  },
 ]
 
-// ── Labeled integer enum params ─────────────────────────────────────────
 
-const PARAM_INT_ENUMS: Record<string, Record<string, string>> = {
-  quality: {
-    '0': 'NONE',
-    '1': 'Performance (deprecated)',
-    '2': 'Quality (deprecated)',
-    '3': 'Ultra (deprecated)',
-    '4': 'Neural',
-    '5': 'Neural Light',
-    '6': 'Neural+',
-  },
-  'rtabmap.Optimizer/Strategy': {
-    '0': 'TORO',
-    '1': 'g2o',
-    '2': 'GTSAM',
-    '3': 'Ceres',
-  },
-}
-
-function ParamField({
-  p,
-  value,
-  onChange,
-  disabled,
-}: {
-  p: ParamDef
-  value: string
-  onChange: (v: string) => void
-  disabled: boolean
-}) {
-  if (p.type === 'bool') {
-    return (
-      <div className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          id={`param-${p.key}`}
-          checked={value === 'true'}
-          onChange={e => onChange(e.target.checked ? 'true' : 'false')}
-          disabled={disabled}
-          className="h-4 w-4 rounded border-gray-600 bg-gray-800 accent-blue-500 disabled:opacity-40"
-        />
-        <label htmlFor={`param-${p.key}`} className="text-xs text-gray-300">{p.label}</label>
-      </div>
-    )
-  }
-  if (p.type === 'int' && PARAM_INT_ENUMS[p.key]) {
-    return (
-      <Select
-        label={p.label}
-        value={value}
-        onChange={onChange}
-        disabled={disabled}
-        options={Object.entries(PARAM_INT_ENUMS[p.key]).map(([v, l]) => ({ value: v, label: `${v} – ${l}` }))}
-      />
-    )
-  }
-  if (p.type.startsWith('choice:')) {
-    const choices = p.type.slice(7).split(',')
-    return (
-      <Select
-        label={p.label}
-        value={value}
-        onChange={onChange}
-        disabled={disabled}
-        options={choices.map(c => ({ value: c, label: c }))}
-      />
-    )
-  }
-  return (
-    <Input
-      label={p.label}
-      value={value}
-      onChange={onChange}
-      disabled={disabled}
-      type={p.type === 'float' || p.type === 'int' ? 'number' : 'text'}
-      placeholder={p.value}
-    />
-  )
-}
 
 // ── Main component ────────────────────────────────────────────────────────
 
@@ -374,10 +197,10 @@ export default function App() {
   const [recordAudio, setRecordAudio] = useState(true)
   const [exportDepth, setExportDepth] = useState(true)
   const [pipelineStatus, setPipelineStatus] = useState<PipelineStatus>('idle')
-  const [logs, setLogs] = useState<string[]>([])
   const [zipReady, setZipReady] = useState(false)
   const [zipDownloading, setZipDownloading] = useState(false)
   const [pipelineSseUrl, setPipelineSseUrl] = useState<string | null>(null)
+  const pipelineStream = useLogStream(pipelineSseUrl)
   const recordLogContainerRef = useRef<HTMLDivElement>(null)
   const logContainerRef = useRef<HTMLDivElement>(null)
   const [extraCliArgs, setExtraCliArgs] = useState('')
@@ -452,7 +275,7 @@ export default function App() {
     if (!el) return
     const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60
     if (isAtBottom) el.scrollTop = el.scrollHeight
-  }, [logs])
+  }, [pipelineStream.logs])
 
   // ── SSE: record ────────────────────────────────────────────────
   useEffect(() => {
@@ -490,26 +313,14 @@ export default function App() {
     return () => sse.close()
   }, [recordSseUrl])
 
-  // ── SSE: pipeline ──────────────────────────────────────────────
+  // ── SSE: pipeline (via useLogStream hook) ─────────────────────
   useEffect(() => {
-    if (!pipelineSseUrl) return
-    const sse = new EventSource(pipelineSseUrl)
-    sse.onmessage = (e: MessageEvent<string>) => {
-      const data = e.data
-      if (data.startsWith('[DONE] exit=')) {
-        const m = data.match(/exit=(-?\d+)/)
-        const ok = m && m[1] === '0'
-        setPipelineStatus(ok ? 'done' : 'error')
-        if (ok && stepEnabled['zip']) setZipReady(true)
-        setPipelineSseUrl(null)
-        sse.close()
-      } else if (data && !data.startsWith(':')) {
-        setLogs(prev => [...prev, data])
-      }
-    }
-    sse.onerror = () => sse.close()
-    return () => sse.close()
-  }, [pipelineSseUrl])
+    if (pipelineStream.exitCode === null) return
+    const ok = pipelineStream.exitCode === 0
+    setPipelineStatus(ok ? 'done' : 'error')
+    if (ok && stepEnabled['zip']) setZipReady(true)
+    setPipelineSseUrl(null)
+  }, [pipelineStream.exitCode])
 
   // ── Handlers ───────────────────────────────────────────────────
 
@@ -601,7 +412,6 @@ export default function App() {
       })
       return
     }
-    setLogs([])
     setZipReady(false)
     try {
       const extra_args: string[] = []
@@ -1273,10 +1083,10 @@ const handleDeletePreset = async () => {
           </div>
 
           {/* Log console */}
-          {logs.length > 0 && (
+          {pipelineStream.logs.length > 0 && (
             <div ref={logContainerRef} className="log-console bg-gray-950 border border-gray-800 rounded-xl p-3 h-60
                             overflow-y-auto font-mono text-xs leading-relaxed">
-              {logs.map((line, i) => (
+              {pipelineStream.logs.map((line, i) => (
                 <div
                   key={i}
                   className={
