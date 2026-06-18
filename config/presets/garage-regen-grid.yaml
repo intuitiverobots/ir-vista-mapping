@@ -1,15 +1,15 @@
-min_z: 0.0
-max_z: 2.0
-resolution: 0.05
 side: right
+render: cloud
+quality: 5
+superpoint: true
+min_z: -0.1
+max_z: 0.8
+resolution: 0.01
 depth_scale: 0.75
 depth_compression: 5
-render: cloud
-superpoint: true
-quality: 5
 trim_start: 0.0
 trim_end: 0.0
-regen_grid: false
+regen_grid: true
 rtabmap:
   Optimizer/Strategy: 2
   Optimizer/GravitySigma: 0.3
@@ -22,9 +22,9 @@ rtabmap:
   Grid/NormalsSegmentation: 'false'
   Grid/MaxGroundHeight: 0.4
   Grid/MaxObstacleHeight: 1.2
-  Grid/CellSize: 0.05
+  Grid/CellSize: 0.01
   Grid/RayTracing: 'false'
   Grid/MinClusterSize: 40
   Kp/MaxFeatures: 2000
   Rtabmap/LoopRatio: 0.65
-  Rtabmap/DetectionRate: 2.0
+  Rtabmap/DetectionRate: 6

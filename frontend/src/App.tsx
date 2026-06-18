@@ -1165,7 +1165,7 @@ const handleDeletePreset = async () => {
 
           {/* File list */}
           {dlLoading && (
-            <p className="text-sm text-gray-400 animate-pulse">Chargement des fichiers…</p>
+            <p className="text-sm text-gray-400 animate-pulse">Loading files…</p>
           )}
 
           {!dlLoading && dlFiles.length > 0 && (() => {

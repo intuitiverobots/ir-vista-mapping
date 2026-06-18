@@ -80,8 +80,8 @@ sudo docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu22.04 nvidia-smi
 ### 1. Clone the repository
 
 ```bash
-git clone git@github-ppeir:ppeir/vista-mapping-pipeline.git
-cd vista-mapping-pipeline
+git clone git@github.com:intuitiverobots/ir-vista-mapping.git
+cd ir-vista-mapping
 ```
 
 ### 2. Build the SLAM Docker image
@@ -109,6 +109,7 @@ docker build \
 The backend uses **system Python** (no virtual environment). The ZED SDK installs `pyzed` globally to expose CUDA and TensorRT drivers — isolating it inside a standard venv would break those native bindings.
 
 ```bash
+cd backend
 pip3 install -r requirements.txt
 ```
 
@@ -119,6 +120,16 @@ cd frontend
 npm install
 npm run build      # outputs to ../backend/static/
 cd ..
+```
+
+if np and node are not installed, install it with:
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/install.sh | bash
+\. "$HOME/.nvm/nvm.sh"
+nvm install 24
+node -v # Should print "v24.17.0".
+npm -v 
 ```
 
 ### 5. Start the server
@@ -175,7 +186,7 @@ After=network.target
 [Service]
 Type=simple
 User=jetson
-WorkingDirectory=/home/jetson/jetson/zed2i/vista-mapping-pipeline
+WorkingDirectory=/home/jetson/jetson/zed2i/ir-vista-mapping
 ExecStart=/usr/bin/python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=5

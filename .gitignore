@@ -8,7 +8,6 @@ __pycache__/
 tools/ZedSvo/build/
 test_01/
 data/
-models/
 *.avi
 *.pgm
 .history/
