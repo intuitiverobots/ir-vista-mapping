@@ -67,9 +67,10 @@ FROM stereolabs/zed:5.2-tools-devel-l4t-r36.4
 | Hardware | Jetson Orin (any variant) |
 | OS | Ubuntu 22.04 ARM64 (JetPack 6.x, L4T r36.4) |
 | Docker | Engine ≥ 24 + **NVIDIA Container Toolkit** |
-| ZED SDK | 5.x installed on the host |
+| ZED SDK | 5.2.3 installed on the host |
 | Python | 3.10 |
 | Node.js | ≥ 18 + npm |
+| ffmpeg | 
 | Disk | ~15 GB free (ZED base image ~8 GB + RTAB-Map build ~4 GB) |
 
 Verify NVIDIA Container Toolkit:
