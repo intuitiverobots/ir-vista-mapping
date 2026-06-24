@@ -2,6 +2,8 @@
 
 export type RecordStatus = 'idle' | 'recording' | 'done' | 'error'
 export type PipelineStatus = 'idle' | 'running' | 'done' | 'error'
+export type AudioMode = 'continuous' | 'push-to-talk' | 'start-stop'
+export type AudioRecordState = 'idle' | 'recording'
 
 export interface SvoFile {
   name: string

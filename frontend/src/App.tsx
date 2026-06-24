@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import toast, { Toaster } from 'react-hot-toast'
-import type { RecordStatus, PipelineStatus, SvoFile, PipelinePayload, ParamDef, DlSession, DlFile } from './types'
+import type { RecordStatus, PipelineStatus, SvoFile, PipelinePayload, ParamDef, DlSession, DlFile, AudioMode, AudioRecordState } from './types'
 import { Input } from './components/Input'
 import { Select } from './components/Select'
 import { ParamField } from './components/ParamField'
@@ -55,6 +55,25 @@ function fmtTime(s: number): string {
   const m = Math.floor(s / 60)
   const sec = s % 60
   return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+}
+
+/** Upload a single audio segment with timing metadata to the backend. */
+async function uploadAudioSegment(
+  sessionName: string,
+  blob: Blob,
+  startTime: number,
+  endTime: number,
+  index: number,
+) {
+  const form = new FormData()
+  form.append('file', blob, `${sessionName}_seg${String(index).padStart(3, '0')}.webm`)
+  form.append('session_name', sessionName)
+  form.append('start_time', String(startTime))
+  form.append('end_time', String(endTime))
+  form.append('segment_index', String(index))
+  const r = await fetch('/api/record/audio', { method: 'POST', body: form })
+  if (!r.ok) console.error('Audio segment upload failed', r.status)
+  return r.ok
 }
 
 
@@ -176,6 +195,13 @@ export default function App() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
+
+  // ── Audio recording state (push-to-talk / start-stop) ─────────
+  const [audioMode, setAudioMode] = useState<AudioMode>('continuous')
+  const [audioRecordState, setAudioRecordState] = useState<AudioRecordState>('idle')
+  const [segmentIdx, setSegmentIdx] = useState(0)
+  const audioSegmentStartRef = useRef<number>(0)  // seconds since video recording began
+  const audioStreamRef = useRef<MediaStream | null>(null)  // shared stream for push-to-talk reuse
 
   // ── Pipeline state ─────────────────────────────────────────────
   const [configs, setConfigs] = useState<string[]>([])
@@ -327,13 +353,19 @@ export default function App() {
   const handleStartRecording = async () => {
     if (!sessionName.trim()) { alert('A session name is required'); return }
 
-    // Request microphone access before starting anything
+    // Request microphone access before starting anything (for all audio modes)
     let audioStream: MediaStream | null = null
-    if (recordAudio) {
+    const needMic = audioMode !== 'continuous' || recordAudio
+    if (needMic) {
       try {
         audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        audioStreamRef.current = audioStream
       } catch {
-        if (!window.confirm('Microphone access denied. Continue recording without audio?')) return
+        if (audioMode === 'continuous' && !window.confirm('Microphone access denied. Continue recording without audio?')) return
+        if (audioMode !== 'continuous') {
+          alert('Microphone access is required for push-to-talk and start/stop audio modes.')
+          return
+        }
       }
     }
 
@@ -350,10 +382,15 @@ export default function App() {
       setElapsed(0)
       setRecordLogs([])
       timerRef.current = null
+      // Seed the start-time ref immediately so audio segments get valid timestamps
+      // even before the first video frame arrives.  The SSE handler will refine it.
+      startTimeRef.current = Date.now()
       setRecordSseUrl(`/api/logs/record?t=${Date.now()}`)
+      setSegmentIdx(0)
 
-      // Start audio aligned with actual SVO first frame (after imu_warmup + wait)
-      if (audioStream) {
+      // Audio recording start differs per mode
+      if (audioMode === 'continuous' && audioStream) {
+        // ── Continuous mode: record one long audio track (existing behaviour) ──
         audioChunksRef.current = []
         const mr = new MediaRecorder(audioStream)
         mr.ondataavailable = (e: BlobEvent) => {
@@ -361,20 +398,21 @@ export default function App() {
         }
         mr.onstop = () => {
           audioStream!.getTracks().forEach(t => t.stop())
+          audioStreamRef.current = null
           const blob = new Blob(audioChunksRef.current, { type: mr.mimeType })
-          const form = new FormData()
-          form.append('file', blob, `${sessionName.trim()}.webm`)
-          form.append('session_name', sessionName.trim())
-          fetch('/api/record/audio', { method: 'POST', body: form })
-            .then(r => { if (!r.ok) console.error('Audio upload failed', r.status) })
-            .catch(err => console.error('Audio upload error', err))
+          // Compute actual elapsed at stop time (not the stale state closure)
+          const endTime = (Date.now() - startTimeRef.current) / 1000
+          uploadAudioSegment(sessionName.trim(), blob, 0, Math.max(0, endTime), 0)
         }
         const delayMs = ((isNaN(parseFloat(imuWarmup)) ? 2.0 : parseFloat(imuWarmup))
           + (isNaN(parseInt(captureWait)) ? 0 : parseInt(captureWait))) * 1000
         setTimeout(() => { mr.start(); mediaRecorderRef.current = mr }, delayMs)
       }
+      // For push-to-talk and start-stop, the microphone stream is already open;
+      // recording starts on user action (see push-to-talk / start-stop handlers).
     } catch (err) {
       audioStream?.getTracks().forEach(t => t.stop())
+      audioStreamRef.current = null
       alert(`Failed to start recording: ${err instanceof Error ? err.message : err}`)
     }
   }
@@ -383,14 +421,71 @@ export default function App() {
     try {
       await apiPost('/api/record/stop')
       if (timerRef.current) clearInterval(timerRef.current)
-      // Stop audio capture — onstop handler uploads the file
+
+      // Stop any active audio recording
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop()
         mediaRecorderRef.current = null
       }
+      // Clean up shared microphone stream if still open
+      if (audioStreamRef.current) {
+        audioStreamRef.current.getTracks().forEach(t => t.stop())
+        audioStreamRef.current = null
+      }
+      setAudioRecordState('idle')
     } catch (err) {
       alert(`Failed to stop recording: ${err instanceof Error ? err.message : err}`)
     }
+  }
+
+  // ── Push-to-talk / Start-Stop audio handlers ──────────────────
+
+  /** Current elapsed seconds since video recording started. */
+  const getElapsedNow = () => (Date.now() - startTimeRef.current) / 1000
+
+  /** Start an audio segment (called on push-to-talk press or start/stop toggle). */
+  const startAudioSegment = () => {
+    const stream = audioStreamRef.current
+    if (!stream) {
+      // Try to re-acquire mic if stream was lost
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(s => {
+          audioStreamRef.current = s
+          _beginSegment(s)
+        })
+        .catch(() => alert('Microphone access required for audio recording.'))
+      return
+    }
+    _beginSegment(stream)
+  }
+
+  const _beginSegment = (stream: MediaStream) => {
+    audioChunksRef.current = []
+    const mr = new MediaRecorder(stream)
+    mr.ondataavailable = (e: BlobEvent) => {
+      if (e.data.size > 0) audioChunksRef.current.push(e.data)
+    }
+    mr.onstop = () => {
+      const blob = new Blob(audioChunksRef.current, { type: mr.mimeType })
+      const endTime = getElapsedNow()
+      const startTime = audioSegmentStartRef.current
+      const idx = segmentIdx
+      uploadAudioSegment(sessionName.trim(), blob, startTime, endTime, idx)
+      setSegmentIdx(prev => prev + 1)
+    }
+    audioSegmentStartRef.current = getElapsedNow()
+    mr.start()
+    mediaRecorderRef.current = mr
+    setAudioRecordState('recording')
+  }
+
+  /** Stop the current audio segment and upload it. */
+  const stopAudioSegment = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+      mediaRecorderRef.current = null
+    }
+    setAudioRecordState('idle')
   }
 
   const handleKillPipeline = async () => {
@@ -675,17 +770,115 @@ const handleDeletePreset = async () => {
             options={ZED_RES_MAP[resolution].fps.map(f => ({ value: String(f), label: `${f} fps` }))}
           />
 
-          {/* Advanced settings – capture */}
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="record-audio-check"
-              checked={recordAudio}
-              onChange={e => setRecordAudio(e.target.checked)}
-              disabled={isRecording}
-              className="h-4 w-4 rounded border-gray-600 bg-gray-800 accent-blue-500 disabled:opacity-40"
-            />
-            <label htmlFor="record-audio-check" className="text-sm text-gray-300">Record audio</label>
+          {/* Audio recording panel */}
+          <div className="space-y-3 border border-gray-800 rounded-xl p-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-300">Audio recording</span>
+              <div className="flex gap-1 bg-gray-800 rounded-lg p-0.5">
+                {([
+                  ['continuous', 'Continuous'],
+                  ['push-to-talk', 'Push-to-talk'],
+                  ['start-stop', 'Start/Stop'],
+                ] as [AudioMode, string][]).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    onClick={() => setAudioMode(mode)}
+                    disabled={isRecording}
+                    className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+                      audioMode === mode
+                        ? 'bg-blue-600 text-white'
+                        : 'text-gray-400 hover:text-gray-200'
+                    } disabled:opacity-40`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Continuous mode: simple checkbox */}
+            {audioMode === 'continuous' && (
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="record-audio-check"
+                  checked={recordAudio}
+                  onChange={e => setRecordAudio(e.target.checked)}
+                  disabled={isRecording}
+                  className="h-4 w-4 rounded border-gray-600 bg-gray-800 accent-blue-500 disabled:opacity-40"
+                />
+                <label htmlFor="record-audio-check" className="text-xs text-gray-400">
+                  Record audio for the entire session (auto-starts after warmup)
+                </label>
+              </div>
+            )}
+
+            {/* Push-to-talk mode: hold button */}
+            {audioMode === 'push-to-talk' && (
+              <div className="space-y-2">
+                <p className="text-xs text-gray-500">
+                  Hold the button below to record audio. Release to stop and send the segment.
+                </p>
+                <button
+                  onMouseDown={e => { e.preventDefault(); if (isRecording) startAudioSegment() }}
+                  onMouseUp={e => { e.preventDefault(); stopAudioSegment() }}
+                  onMouseLeave={e => { e.preventDefault(); stopAudioSegment() }}
+                  onTouchStart={e => { e.preventDefault(); if (isRecording) startAudioSegment() }}
+                  onTouchEnd={e => { e.preventDefault(); stopAudioSegment() }}
+                  onTouchCancel={e => { e.preventDefault(); stopAudioSegment() }}
+                  disabled={!isRecording}
+                  className={`w-full rounded-xl py-3 text-sm font-bold transition-all select-none
+                    ${!isRecording
+                      ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                      : audioRecordState === 'recording'
+                        ? 'bg-red-600 text-white scale-95 shadow-inner'
+                        : 'bg-blue-600 hover:bg-blue-500 text-white active:scale-95'
+                    }`}
+                >
+                  {!isRecording
+                    ? 'Start video recording first'
+                    : audioRecordState === 'recording'
+                      ? '🔴 Recording audio… (release to stop)'
+                      : '🎤 Hold to talk'}
+                </button>
+                <p className="text-xs text-gray-500 text-center tabular-nums">
+                  {segmentIdx > 0 ? `${segmentIdx} segment${segmentIdx > 1 ? 's' : ''} recorded` : 'No segments yet'}
+                </p>
+              </div>
+            )}
+
+            {/* Start/Stop mode: toggle button */}
+            {audioMode === 'start-stop' && (
+              <div className="space-y-2">
+                <p className="text-xs text-gray-500">
+                  Toggle audio recording on/off independently of the video.
+                </p>
+                <button
+                  onClick={() => {
+                    if (!isRecording) return
+                    if (audioRecordState === 'recording') stopAudioSegment()
+                    else startAudioSegment()
+                  }}
+                  disabled={!isRecording}
+                  className={`w-full rounded-xl py-3 text-sm font-bold transition-colors
+                    ${!isRecording
+                      ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                      : audioRecordState === 'recording'
+                        ? 'bg-red-700 hover:bg-red-600 text-white'
+                        : 'bg-green-700 hover:bg-green-600 text-white'
+                    }`}
+                >
+                  {!isRecording
+                    ? 'Start video recording first'
+                    : audioRecordState === 'recording'
+                      ? '⏹ Stop audio recording'
+                      : '🎤 Start audio recording'}
+                </button>
+                <p className="text-xs text-gray-500 text-center tabular-nums">
+                  {segmentIdx > 0 ? `${segmentIdx} segment${segmentIdx > 1 ? 's' : ''} recorded` : 'No segments yet'}
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Advanced settings – capture */}
@@ -1060,7 +1253,7 @@ const handleDeletePreset = async () => {
             )}
           </div>
 
-          
+
 
           {/* Launch / Kill buttons */}
           <div className="flex gap-2">

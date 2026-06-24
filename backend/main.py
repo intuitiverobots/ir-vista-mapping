@@ -3,10 +3,18 @@ main.py – FastAPI application entry point.
 
 Start the server (from repo root):
 
-    uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+    # HTTP (no microphone support):
+    uvicorn backend.main:app --host 0.0.0.0 --port 8080 --reload
+
+    # HTTPS (required for browser microphone access):
+    uvicorn backend.main:app --host 0.0.0.0 --port 8080 \\
+        --ssl-keyfile key.pem --ssl-certfile cert.pem
+
+    # Or simply:
+    python -m backend.main          # auto-detects SSL cert/key
 
 In development, run the React dev server separately (cd frontend && npm run dev),
-which proxies /api to localhost:8000.
+which proxies /api to localhost:8080.
 
 For production, build the frontend first (cd frontend && npm run build), which
 writes static assets to backend/static/.  The app will then serve the SPA
@@ -14,9 +22,11 @@ from that directory.
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -69,3 +79,48 @@ else:
             "<p>API docs: <a href='/docs'>/docs</a></p>"
             "</body></html>"
         )
+
+# ── Direct execution (python -m backend.main) ─────────────────────────────
+
+if __name__ == "__main__":
+    import argparse as _argparse
+
+    _parser = _argparse.ArgumentParser(description="Vista Capture App server")
+    _parser.add_argument("--host", "--hostname", dest="hostname",
+                         default=os.environ.get("HOST", "0.0.0.0"),
+                         help="Bind address (default: 0.0.0.0, or $HOST)")
+    _parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")),
+                         help="Bind port (default: 8080, or $PORT)")
+    _parser.add_argument("--no-ssl", action="store_true",
+                         help="Force HTTP even if cert.pem/key.pem are present")
+    _cli = _parser.parse_args()
+
+    repo_root = Path(__file__).resolve().parent.parent
+    host = _cli.hostname
+    port = _cli.port
+
+    cert_file = repo_root / "cert.pem"
+    key_file = repo_root / "key.pem"
+
+    ssl_kwargs: dict = {}
+    if not _cli.no_ssl and cert_file.is_file() and key_file.is_file():
+        ssl_kwargs = {
+            "ssl_certfile": str(cert_file),
+            "ssl_keyfile": str(key_file),
+        }
+        logger.info("SSL enabled – HTTPS on https://%s:%s", host, port)
+    else:
+        reason = "(--no-ssl)" if _cli.no_ssl else f"(files missing: {cert_file} / {key_file})"
+        logger.warning(
+            "SSL disabled %s. Serving HTTP only – browser microphone access will be blocked.",
+            reason,
+        )
+
+    logger.info("Starting server on %s:%s ...", host, port)
+    uvicorn.run(
+        "backend.main:app",
+        host=host,
+        port=port,
+        reload=False,  # never reload in production / systemd
+        **ssl_kwargs,
+    )

@@ -108,6 +108,7 @@ def run(cmd: list[str], description: str, fatal: bool = True) -> int:
     print(f"\n{'='*60}")
     print(f"  {description}")
     print(f"{'='*60}\n")
+    #print(f"$ {' '.join(cmd)}\n")
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         if fatal:
@@ -230,6 +231,7 @@ def run_step(
         # TensorRT engines already compiled on the Jetson (avoids ~10 min recompile).
         # The host path /usr/local/zed/resources contains the pre-optimised engines.
         "-v", "/usr/local/zed/resources:/usr/local/zed/resources:rw",
+        "-v", "/usr/local/zed/settings:/usr/local/zed/settings:ro"
     ]
 
     if extra_docker_args:
@@ -242,6 +244,7 @@ def run_step(
 
 
 def main() -> None:
+    print("Starting process_svo.py – Offline SLAM orchestrator")
     parser = argparse.ArgumentParser(
         description="Offline SLAM: process a ZED SVO file with RTAB-Map standalone.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,

@@ -28,7 +28,7 @@ import cv2
 from pathlib import Path
 import enum
 import argparse
-import os 
+import os
 
 class AppType(enum.Enum):
     LEFT_AND_RIGHT = 1
@@ -45,7 +45,7 @@ def main(opt):
     svo_input_path = opt.input_svo_file
     output_dir = opt.output_path_dir
     video_output_path = opt.output_file
-    output_as_video = True    
+    output_as_video = True
     app_type = AppType.LEFT_AND_RIGHT
     if opt.mode == 1 or opt.mode == 3:
         app_type = AppType.LEFT_AND_DEPTH
@@ -78,7 +78,7 @@ def main(opt):
         sys.stdout.write(repr(err))
         zed.close()
         exit()
-    
+
     # Get camera info once
     cam_info = zed.get_camera_information()
     image_size = cam_info.camera_configuration.resolution
@@ -97,7 +97,7 @@ def main(opt):
         f"  FPS         : {fps}\n"
         f"  Total frames: {nb_frames} ({nb_frames / fps:.1f}s)\n"
     )
-    
+
     # Prepare side by side image container equivalent to CV_8UC4
     svo_image_sbs_rgba = np.zeros((height, width_sbs, 4), dtype=np.uint8)
 
@@ -129,7 +129,7 @@ def main(opt):
                              "permissions.\n")
             zed.close()
             exit()
-    
+
     rt_param = sl.RuntimeParameters()
 
     # Compute frame range from trim parameters
@@ -264,65 +264,168 @@ def main(opt):
                     sys.stdout.write("ffmpeg re-encoding failed:\n" + result.stderr.decode() + "\n")
                 else:
                     sys.stdout.write("Re-encoding done.\n")
-                    # --- Audio mux: look for audio file next to the SVO ---
+                    # --- Audio mux ---
+                    #
+                    # Two modes are supported:
+                    # 1. New  segmented  mode:  data/raw/<stem>_audio/manifest.json
+                    #    contains per-segment start/end times.  Segments are placed at
+                    #    their correct video-timeline offsets with silence in gaps.
+                    # 2. Legacy single-file mode: a .webm/.ogg next to the SVO file.
+                    #    Used when no manifest directory exists.
                     svo_stem = Path(opt.input_svo_file)
-                    audio_path = None
-                    for _ext in ('.webm', '.ogg'):
-                        _candidate = svo_stem.with_suffix(_ext)
-                        if _candidate.exists():
-                            audio_path = _candidate
-                            break
-                    if audio_path is not None:
-                        def _get_duration(p: str) -> float | None:
-                            r = subprocess.run(
-                                ["ffprobe", "-v", "error",
-                                 "-show_entries", "format=duration",
-                                 "-of", "default=noprint_wrappers=1:nokey=1", p],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            )
-                            try:
-                                return float(r.stdout.decode().strip())
-                            except ValueError:
-                                return None
+                    audio_dir = svo_stem.parent / f"{svo_stem.stem}_audio"
+                    manifest_path = audio_dir / "manifest.json"
 
-                        vid_dur = _get_duration(video_output_path)
-                        aud_dur = _get_duration(str(audio_path))
-                        if vid_dur is not None and aud_dur is not None:
-                            # Add a small correction for SVO tail latency:
-                            # mr.stop() and SIGINT are sent simultaneously, but svo_recording.py
-                            # keeps grabbing 1-2 frames after SIGINT before closing the SVO,
-                            # making vid_dur slightly longer than the real audio content duration.
-                            # This means (aud_dur - vid_dur) under-estimates the true head gap,
-                            # so without correction the audio plays slightly late.
-                            _SVO_TAIL_S = 0.3
-                            audio_offset = max(0.0, aud_dur - vid_dur + _SVO_TAIL_S)
+                    # ── Helper: get duration via ffprobe ─────────────────
+                    def _get_duration(p: str) -> float | None:
+                        r = subprocess.run(
+                            ["ffprobe", "-v", "error",
+                             "-show_entries", "format=duration",
+                             "-of", "default=noprint_wrappers=1:nokey=1", p],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        )
+                        try:
+                            return float(r.stdout.decode().strip())
+                        except ValueError:
+                            return None
+
+                    vid_dur = _get_duration(video_output_path)
+
+                    # ── Check for segmented manifest first ───────────────
+                    if manifest_path.is_file() and vid_dur is not None:
+                        import json as _json
+                        try:
+                            manifest = _json.loads(manifest_path.read_text())
+                        except (ValueError, OSError):
+                            manifest = {"segments": []}
+
+                        raw_segments = manifest.get("segments", [])
+                        trim_s = float(opt.trim_start)
+                        trim_e = float(opt.trim_end)
+
+                        # Adjust segment times for video trim and clip to video bounds
+                        active: list[tuple[Path, float, float]] = []
+                        for seg in raw_segments:
+                            seg_path = audio_dir / seg["file"]
+                            if not seg_path.is_file():
+                                continue
+                            t0 = float(seg["start_time"]) - trim_s
+                            t1 = float(seg["end_time"]) - trim_s
+                            if t1 <= 0.0:
+                                continue
+                            vid_end = vid_dur if trim_e == 0 else max(0.0, vid_dur)
+                            if t0 >= vid_end:
+                                continue
+                            t0 = max(0.0, t0)
+                            t1 = min(vid_end, t1)
+                            if t1 > t0:
+                                active.append((seg_path, t0, t1))
+
+                        if active:
                             sys.stdout.write(
-                                f"Muxing audio: {audio_path.name} "
-                                f"(video={vid_dur:.2f}s, audio={aud_dur:.2f}s, skip={audio_offset:.2f}s)\n"
+                                f"Muxing {len(active)} audio segment(s) with ffmpeg "
+                                f"(video={vid_dur:.2f}s)...\n"
                             )
+                            # Build ffmpeg command: silent background + adelay'd segments → amix
+                            ff_cmd = [
+                                "ffmpeg", "-y",
+                                "-i", video_output_path,
+                            ]
+                            filter_chains: list[str] = []
+                            amix_labels: list[str] = []
+                            for i, (spath, t0, _t1) in enumerate(active):
+                                ff_cmd.extend(["-i", str(spath)])
+                                delay_ms = int(round(t0 * 1000))
+                                filter_chains.append(
+                                    f"[{i + 1}:a]aresample=44100,aformat=channel_layouts=stereo,"
+                                    f"adelay={delay_ms}|{delay_ms}[a{i}]"
+                                )
+                                amix_labels.append(f"[a{i}]")
+
+                            # anullsrc background track matching the video duration (stereo, 44100 Hz)
+                            filter_complex = (
+                                f"anullsrc=r=44100:cl=stereo:d={vid_dur}[bg];"
+                                + ";".join(filter_chains) + ";"
+                                + f"[bg]{''.join(amix_labels)}amix="
+                                  f"inputs={len(amix_labels) + 1}:"
+                                  f"duration=first:dropout_transition=0[outa]"
+                            )
+                            ff_cmd += [
+                                "-filter_complex", filter_complex,
+                                "-map", "0:v",
+                                "-map", "[outa]",
+                                "-c:v", "copy",
+                                "-c:a", "aac",
+                            ]
                             tmp_muxed = video_output_path + ".muxed.mp4"
-                            mux_result = subprocess.run(
-                                [
-                                    "ffmpeg", "-y",
-                                    "-i", video_output_path,
-                                    "-ss", f"{audio_offset:.6f}",
-                                    "-i", str(audio_path),
-                                    "-c:v", "copy",
-                                    "-c:a", "aac",
-                                    tmp_muxed,
-                                ],
-                                stderr=subprocess.PIPE,
-                            )
+                            ff_cmd.append(tmp_muxed)
+
+                            mux_result = subprocess.run(ff_cmd, stderr=subprocess.PIPE)
                             if mux_result.returncode == 0:
                                 os.replace(tmp_muxed, video_output_path)
                                 sys.stdout.write("Audio mux done.\n")
                             else:
                                 if os.path.exists(tmp_muxed):
                                     os.remove(tmp_muxed)
-                                sys.stdout.write("Audio mux failed:\n" + mux_result.stderr.decode() + "\n")
+                                err_out = mux_result.stderr.decode(errors="replace")
+                                # Print only the last 4 lines of ffmpeg output on failure
+                                err_tail = "\n".join(
+                                    [l for l in err_out.splitlines() if l.strip()][-4:]
+                                )
+                                sys.stdout.write(
+                                    f"Audio mux failed (ffmpeg exit {mux_result.returncode}):\n"
+                                    f"{err_tail}\n"
+                                )
                         else:
-                            sys.stdout.write("Audio mux skipped: could not read durations.\n")
+                            sys.stdout.write("Audio mux skipped: no valid segments after trim.\n")
+
+                    # ── Fallback: legacy single-file audio ───────────────
+                    elif not manifest_path.is_file():
+                        audio_path = None
+                        for _ext in ('.webm', '.ogg'):
+                            _candidate = svo_stem.with_suffix(_ext)
+                            if _candidate.exists():
+                                audio_path = _candidate
+                                break
+                        if audio_path is not None:
+                            aud_dur = _get_duration(str(audio_path))
+                            if vid_dur is not None and aud_dur is not None:
+                                # Add a small correction for SVO tail latency:
+                                # mr.stop() and SIGINT are sent simultaneously, but svo_recording.py
+                                # keeps grabbing 1-2 frames after SIGINT before closing the SVO,
+                                # making vid_dur slightly longer than the real audio content duration.
+                                # This means (aud_dur - vid_dur) under-estimates the true head gap,
+                                # so without correction the audio plays slightly late.
+                                _SVO_TAIL_S = 0.3
+                                audio_offset = max(0.0, aud_dur - vid_dur + _SVO_TAIL_S)
+                                sys.stdout.write(
+                                    f"Muxing audio: {audio_path.name} "
+                                    f"(video={vid_dur:.2f}s, audio={aud_dur:.2f}s, skip={audio_offset:.2f}s)\n"
+                                )
+                                tmp_muxed = video_output_path + ".muxed.mp4"
+                                mux_result = subprocess.run(
+                                    [
+                                        "ffmpeg", "-y",
+                                        "-i", video_output_path,
+                                        "-ss", f"{audio_offset:.6f}",
+                                        "-i", str(audio_path),
+                                        "-c:v", "copy",
+                                        "-c:a", "aac",
+                                        tmp_muxed,
+                                    ],
+                                    stderr=subprocess.PIPE,
+                                )
+                                if mux_result.returncode == 0:
+                                    os.replace(tmp_muxed, video_output_path)
+                                    sys.stdout.write("Audio mux done.\n")
+                                else:
+                                    if os.path.exists(tmp_muxed):
+                                        os.remove(tmp_muxed)
+                                    sys.stdout.write("Audio mux failed:\n" + mux_result.stderr.decode() + "\n")
+                            else:
+                                sys.stdout.write("Audio mux skipped: could not read durations.\n")
         zed.close()
+    sys.stdout.write("Exiting svo export.\n")
     return 0
 
 
@@ -342,7 +445,7 @@ if __name__ == "__main__":
                         help='Scale factor for depth image resolution (e.g. 0.5 → half size). Default: 1.0.')
     parser.add_argument('--depth-compression', type=int, default=5, choices=range(10),
                         metavar='[0-9]',
-                        help='PNG compression level for depth images (0=none, 9=max). Default: 5.')    
+                        help='PNG compression level for depth images (0=none, 9=max). Default: 5.')
     opt = parser.parse_args()
     if opt.mode not in (0, 1, 2, 3, 4, 5):
         print("Mode should be 0-5.\n 0: LEFT+RIGHT video\n 1: LEFT+DEPTH_VIEW video\n 2: LEFT+RIGHT sequence\n 3: LEFT+DEPTH_VIEW sequence\n 4: LEFT+DEPTH_16BIT sequence\n 5: LEFT+RIGHT video + DEPTH_16BIT sequence (combined)")

@@ -1,6 +1,6 @@
 # Vista Capture App
 
-> A headless web application for field mapping with the ZED 2i camera on NVIDIA Jetson Orin.  
+> A headless web application for field mapping with the ZED 2i camera on NVIDIA Jetson Orin.
 > Control capture and SLAM processing from any smartphone — no screen, no keyboard, no SSH required.
 
 ---
@@ -43,7 +43,7 @@ The Docker image is based on the Stereolabs Jetson image:
 FROM stereolabs/zed:5.2-tools-devel-l4t-r36.4
 ```
 
-> The `tools-devel` L4T variant is the correct Jetson-native dev image for JetPack 6.1 (L4T r36.4).  
+> The `tools-devel` L4T variant is the correct Jetson-native dev image for JetPack 6.1 (L4T r36.4).
 > Check available tags at [hub.docker.com/r/stereolabs/zed/tags](https://hub.docker.com/r/stereolabs/zed/tags).
 
 ### Frontend — static SPA served by FastAPI
@@ -70,7 +70,7 @@ FROM stereolabs/zed:5.2-tools-devel-l4t-r36.4
 | ZED SDK | 5.2.3 installed on the host |
 | Python | 3.10 |
 | Node.js | ≥ 18 + npm |
-| ffmpeg | 
+| ffmpeg |
 | Disk | ~15 GB free (ZED base image ~8 GB + RTAB-Map build ~4 GB) |
 
 Verify NVIDIA Container Toolkit:
@@ -130,16 +130,25 @@ curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/install.sh | bash
 \. "$HOME/.nvm/nvm.sh"
 nvm install 24
 node -v # Should print "v24.17.0".
-npm -v 
+npm -v
 ```
 
 ### 5. Start the server
 
 ```bash
-python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8080
+python3 -m backend.main --host 0.0.0.0 --port 8080
 ```
 
-The app is now available at `http://<jetson-ip>:8080`.
+The server auto-detects `cert.pem` and `key.pem` in the repo root.  When both are
+present it starts in **HTTPS** mode (required for browser microphone access).
+Otherwise it falls back to plain HTTP.
+
+The app is then available at:
+
+| Mode | URL |
+|---|---|
+| HTTPS | `https://<jetson-ip>:8080` |
+| HTTP  | `http://<jetson-ip>:8080` |
 
 ---
 
@@ -149,25 +158,30 @@ The typical field setup does **not** require a router. Two options:
 
 ### Option A — Jetson Wi-Fi Hotspot
 
-Enable the Jetson's built-in hotspot (Settings → Wi-Fi → Hotspot).  
+Enable the Jetson's built-in hotspot (Settings → Wi-Fi → Hotspot).
 Connect the smartphone to the Jetson's hotspot network, then open:
 
 ```
-http://10.42.0.1:8080
+https://10.42.0.1:8080
 ```
 
-or if mDNS resolves: `http://jetson.local:8080`
+or if mDNS resolves: `https://jetson.local:8080`
+
+> **Note:** The self-signed certificate triggers a browser warning on first visit.
+> Click **Advanced → Proceed** to accept it.  HTTPS is required for microphone
+> access (push-to-talk / audio recording).
 
 ### Option B — Smartphone USB tethering / mobile hotspot
 
-Share the phone's connection to the Jetson. Both devices end up on the same LAN.  
+Share the phone's connection to the Jetson. Both devices end up on the same LAN.
 The Jetson's mDNS name resolves automatically on most modern phones:
 
 ```
-http://jetson.local:8080
+https://jetson.local:8080
 ```
 
 > **Tip:** bookmark the URL on the smartphone home screen for one-tap access.
+> Accept the self-signed certificate warning on first visit to enable microphone access.
 
 ---
 
@@ -188,7 +202,7 @@ After=network.target
 Type=simple
 User=jetson
 WorkingDirectory=/home/jetson/jetson/zed2i/ir-vista-mapping
-ExecStart=/usr/bin/python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8080
+ExecStart=/usr/bin/python3 -m backend.main --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -376,27 +390,27 @@ vista-mapping-pipeline/
 
 ## Troubleshooting
 
-**`image not found` when starting the pipeline**  
+**`image not found` when starting the pipeline**
 → Build the Docker image first (Step 2 above).
 
-**ZED SDK initialisation fails on SVO file**  
-→ Ensure the SVO was recorded with a ZED 2i and ZED SDK ≥ 5.0.  
+**ZED SDK initialisation fails on SVO file**
+→ Ensure the SVO was recorded with a ZED 2i and ZED SDK ≥ 5.0.
 → Check the file is not corrupted: `file <recording>.svo2` should show a binary file.
 
-**RTAB-Map exits immediately with `No input image`**  
+**RTAB-Map exits immediately with `No input image`**
 → The SVO path inside the container must be `/data/<filename>`. Check that `--svo` points to the actual `.svo2` file, not a directory.
 
-**Pipeline reports `[FAILED exit=None]`**  
+**Pipeline reports `[FAILED exit=None]`**
 → The subprocess stdout was not fully drained before checking the return code. This is a known issue fixed in `run_pipeline.py` by calling `proc.wait()` after joining reader threads.
 
-**Out of memory during Docker build**  
+**Out of memory during Docker build**
 → Reduce parallel jobs: in `Dockerfile.rtabmap_standalone`, change `make -j$(nproc)` to `make -j2`.
 
-**`docker: Error response from daemon: could not select device driver "nvidia"`**  
-→ NVIDIA Container Toolkit is not installed or not configured.  
+**`docker: Error response from daemon: could not select device driver "nvidia"`**
+→ NVIDIA Container Toolkit is not installed or not configured.
    Follow: <https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html>
 
-**Qt platform error (`QXcbConnection: Could not connect to display`)**  
+**Qt platform error (`QXcbConnection: Could not connect to display`)**
 → Already handled: the pipeline sets `QT_QPA_PLATFORM=offscreen` inside the container.
 
 ---
@@ -419,3 +433,23 @@ vista-mapping-pipeline/
 
 - [`vista-alpha/webapp/zed2i_node/`](../vista-alpha/webapp/zed2i_node/) — ROS 2 ZED node for live operation
 - [`video-analysis-pipeline/`](../video-analysis-pipeline/) — Video analytics pipeline
+
+
+## Troubleshoot:
+If you have a downloading error like this:
+
+```bash
+[process_svo.py] [2026-06-19 13:18:28 UTC][ZED][INFO] [Init] Serial Number: S/N 37596972
+[process_svo.py] [2026-06-19 13:18:28 UTC][ZED][INFO] [Init] No calibration file was found for SN 37596972. Downloading the file...
+[process_svo.py] [2026-06-19 13:24:01 UTC][ZED][ERROR] CALIBRATION FILE NOT AVAILABLE in sl::ERROR_CODE sl::Camera::open(sl::InitParameters)
+[process_svo.py] [ERROR] (2026-06-19 13:24:01.259) CameraStereoZed.cpp:455::init() Camera initialization failed: "CALIBRATION FILE NOT AVAILABLE"
+[process_svo.py] [ERROR] Failed to open SVO file: /data/Hpo-test-audio.svo2
+```
+
+You can download the file manually:
+http://calib.stereolabs.com/?SN=37596972
+
+Then copy it to the local settings:
+```bash
+sudo cp SN37596972.conf /usr/local/zed/settings/
+```

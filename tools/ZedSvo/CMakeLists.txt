@@ -20,7 +20,11 @@ IF(NOT ZED_LIBRARIES)
     SET(ZED_LIBRARIES /usr/local/zed/lib/libsl_zed.so)
 ENDIF()
 
-# sl/Camera.hpp includes CUDA headers (cuda.h, cuda_runtime.h)
+# sl/Camera.hpp includes CUDA headers (cuda.h, cuda_runtime.h).
+# On Jetson / L4T, CUDA headers live in /usr/local/cuda/include.
+# The ZED SDK base image already has them; we just need to point CMake at them.
+# CUDAToolkit / CUDA packages are optional – if neither is found we add the
+# standard L4T path explicitly.
 FIND_PACKAGE(CUDAToolkit QUIET)
 IF(CUDAToolkit_FOUND)
     INCLUDE_DIRECTORIES(${CUDAToolkit_INCLUDE_DIRS})
@@ -28,6 +32,12 @@ ELSE()
     FIND_PACKAGE(CUDA QUIET)
     IF(CUDA_FOUND)
         INCLUDE_DIRECTORIES(${CUDA_INCLUDE_DIRS})
+    ELSE()
+        # Hard-coded fallback for Jetson L4T / ZED SDK Docker images
+        IF(EXISTS /usr/local/cuda/include)
+            INCLUDE_DIRECTORIES(/usr/local/cuda/include)
+            MESSAGE(STATUS "CUDA headers: /usr/local/cuda/include (fallback)")
+        ENDIF()
     ENDIF()
 ENDIF()
 

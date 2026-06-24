@@ -45,11 +45,36 @@ CONFIG_DIR = REPO_ROOT / "config"
 
 
 def run(cmd: list[str], description: str) -> None:
-    print(f"\n{'='*60}\n  {description}\n{'='*60}")
-    result = subprocess.run(cmd, check=False)
-    if result.returncode != 0:
-        print(f"\n[ERROR] Failed (exit {result.returncode}): {description}", file=sys.stderr)
-        sys.exit(result.returncode)
+    """Run a subprocess, streaming its stdout/stderr line by line."""
+    label = description.split("→")[-1].strip()
+    print(f"\n{'='*60}\n  {description}\n{'='*60}", flush=True)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert proc.stdout is not None
+
+    buf = bytearray()
+    try:
+        while True:
+            char = proc.stdout.read(1)
+            if not char:
+                if buf:
+                    text = buf.decode("utf-8", errors="replace").strip()
+                    if text:
+                        print(f"  [{label}] {text}", flush=True)
+                break
+            if char in (b"\n", b"\r"):
+                text = buf.decode("utf-8", errors="replace").strip()
+                if text:
+                    print(f"  [{label}] {text}", flush=True)
+                buf.clear()
+            else:
+                buf.extend(char)
+    finally:
+        proc.stdout.close()
+        proc.wait()
+
+    if proc.returncode != 0:
+        print(f"\n[ERROR] Failed (exit {proc.returncode}): {description}", file=sys.stderr)
+        sys.exit(proc.returncode)
 
 
 def run_parallel(jobs: list[tuple[list[str], str]]) -> None:
@@ -316,8 +341,33 @@ def main() -> None:
 
     mp4_path = output_path / f"{output_name}.mp4"
 
+    # ── Step progress helpers ─────────────────────────────────────────
+    _t0 = time.time()
+    _step_total = 6
+
+    def _step_start(n: int, name: str) -> float:
+        t = time.time()
+        elapsed = t - _t0
+        print(f"\n{'─'*60}\n"
+              f"  [PIPELINE] Step {n}/{_step_total} – {name} – START  "
+              f"(elapsed {elapsed:.1f}s)\n"
+              f"{'─'*60}", flush=True)
+        return t
+
+    def _step_done(n: int, name: str, t_start: float) -> None:
+        dur = time.time() - t_start
+        elapsed = time.time() - _t0
+        print(f"\n  [PIPELINE] Step {n}/{_step_total} – {name} – DONE  "
+              f"({dur:.1f}s, total {elapsed:.1f}s)", flush=True)
+
+    def _step_skip(n: int, name: str) -> None:
+        elapsed = time.time() - _t0
+        print(f"\n  [PIPELINE] Step {n}/{_step_total} – {name} – SKIP  "
+              f"(total {elapsed:.1f}s)", flush=True)
+
     # Step 1/6: Camera intrinsics
     if not args.skip_camera_info:
+        t1 = _step_start(1, "Camera intrinsics (zed_camera_info.py)")
         run(
             [
                 sys.executable, str(SRC_DIR / "zed_camera_info.py"),
@@ -327,10 +377,12 @@ def main() -> None:
             ],
             "Step 1/6 – Camera intrinsics  →  zed_camera_info.py",
         )
+        _step_done(1, "Camera intrinsics (zed_camera_info.py)", t1)
     else:
-        print("\n[SKIP] Camera intrinsics step.")
+        _step_skip(1, "Camera intrinsics")
 
-    # Steps 1+2: SLAM and video export in parallel (both read SVO, write to different files)
+    # Steps 2+3: SLAM and video export in parallel (both read SVO, write to different files)
+    t_parallel = _step_start(2, "SLAM + Video/Depth export (parallel)")
     parallel_jobs = []
     if not args.skip_slam:
         parallel_jobs.append((
@@ -339,7 +391,7 @@ def main() -> None:
             "Step 2/6 – SLAM  →  process_svo.py",
         ))
     else:
-        print("\n[SKIP] SLAM step.")
+        _step_skip(2, "SLAM")
 
     depth_dir = output_path / "depth"
     if not args.skip_video or not args.skip_depth:
@@ -375,17 +427,20 @@ def main() -> None:
         ))
     else:
         depth_dir = None
-        print("\n[SKIP] Video + Depth export step.")
+        _step_skip(3, "Video/Depth export")
 
     if parallel_jobs:
         run_parallel(parallel_jobs)
+    _step_done(2, "SLAM + Video/Depth export (parallel)", t_parallel)
 
     # Step 4/6: Pose conversion
     localisation_json = output_path / "positions.json"
     if not args.skip_poses:
+        t4 = _step_start(4, "Pose conversion (convert_poses.py)")
         poses_txt = output_path / "rtabmap_poses.txt"
         if not poses_txt.is_file():
             print(f"\n[WARN] rtabmap_poses.txt not found, skipping pose conversion: {poses_txt}", file=sys.stderr)
+            _step_skip(4, "Pose conversion (missing rtabmap_poses.txt)")
         else:
             print(f"\n{'='*60}\n  Step 4/6 – Pose conversion  →  convert_poses.py\n{'='*60}")
             cp = load_convert_poses()
@@ -393,8 +448,9 @@ def main() -> None:
             cp.OUTPUT_FILE = str(localisation_json)
             cp.process_poses()
             print(f"[OK] {localisation_json}")
+            _step_done(4, "Pose conversion (convert_poses.py)", t4)
     else:
-        print("\n[SKIP] Pose conversion step.")
+        _step_skip(4, "Pose conversion")
 
     # Step 5/6: Manual 2D projection
     manual_pgm = output_path / "map_manual.pgm"
@@ -402,7 +458,9 @@ def main() -> None:
         cloud_ply = output_path / "rtabmap_cloud.ply"
         if not cloud_ply.is_file():
             print(f"\n[WARN] rtabmap_cloud.ply not found, skipping 2D projection: {cloud_ply}", file=sys.stderr)
+            _step_skip(5, "Manual 2D projection (missing cloud)")
         else:
+            t5 = _step_start(5, "Manual 2D projection (project_ply.py)")
             run(
                 [sys.executable, str(SRC_DIR / "project_ply.py"),
                  "--input", str(cloud_ply),
@@ -412,11 +470,13 @@ def main() -> None:
                  "--resolution", str(args.resolution)],
                 "Step 5/6 – Manual 2D projection  →  project_ply.py",
             )
+            _step_done(5, "Manual 2D projection (project_ply.py)", t5)
     else:
-        print("\n[SKIP] 2D projection step.")
+        _step_skip(5, "Manual 2D projection")
 
     # Step 6/6: ZIP assembly
     if not args.skip_zip:
+        t6 = _step_start(6, "ZIP assembly")
         if args.map_choice is not None:
             if args.map_choice == 1:
                 _candidate = output_path / "map.pgm"
@@ -470,10 +530,12 @@ def main() -> None:
                 print("[WARN] No map.yaml included in ZIP (not generated).", file=sys.stderr)
         print(f"\n[DONE] {zip_path}")
         print(f"       positions.json | {output_name}.mp4 | map.pgm | map.yaml | camera_info.json | depth_camera_info.json | depth/*.png")
+        _step_done(6, "ZIP assembly", t6)
     else:
-        print("\n[SKIP] ZIP assembly step.")
+        _step_skip(6, "ZIP assembly")
 
-    print("\n[DONE] Pipeline complete.")
+    total = time.time() - _t0
+    print(f"\n{'='*60}\n  [PIPELINE] All steps complete – total {total:.1f}s\n{'='*60}")
 
 
 if __name__ == "__main__":
