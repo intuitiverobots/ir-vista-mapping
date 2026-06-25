@@ -21,10 +21,10 @@ IF(NOT ZED_LIBRARIES)
 ENDIF()
 
 # sl/Camera.hpp includes CUDA headers (cuda.h, cuda_runtime.h).
-# On Jetson / L4T, CUDA headers live in /usr/local/cuda/include.
-# The ZED SDK base image already has them; we just need to point CMake at them.
+# CUDA headers live in /usr/local/cuda/include; the ZED SDK base image
+# already has them — we just need to point CMake at them.
 # CUDAToolkit / CUDA packages are optional – if neither is found we add the
-# standard L4T path explicitly.
+# standard CUDA path explicitly.
 FIND_PACKAGE(CUDAToolkit QUIET)
 IF(CUDAToolkit_FOUND)
     INCLUDE_DIRECTORIES(${CUDAToolkit_INCLUDE_DIRS})
@@ -33,7 +33,7 @@ ELSE()
     IF(CUDA_FOUND)
         INCLUDE_DIRECTORIES(${CUDA_INCLUDE_DIRS})
     ELSE()
-        # Hard-coded fallback for Jetson L4T / ZED SDK Docker images
+        # Hard-coded fallback for ZED SDK Docker images
         IF(EXISTS /usr/local/cuda/include)
             INCLUDE_DIRECTORIES(/usr/local/cuda/include)
             MESSAGE(STATUS "CUDA headers: /usr/local/cuda/include (fallback)")
@@ -43,9 +43,9 @@ ENDIF()
 
 ADD_EXECUTABLE(zed_svo main.cpp)
 
-# L4T BSP libraries (libcuda.so.1, libnvbufsurface, libnvargus etc.) live on
-# the Jetson host and are injected at runtime by the NVIDIA container runtime.
-# Allow unresolved shared-library symbols at link time.
+# ZED SDK references CUDA symbols (libcuda.so.1, libnvcuvid.so.1,
+# libnvidia-encode.so.1) that are only available at runtime via --gpus all.
+# Allow unresolved symbols at link time.
 TARGET_LINK_OPTIONS(zed_svo PRIVATE -Wl,--allow-shlib-undefined)
 
 TARGET_LINK_LIBRARIES(zed_svo

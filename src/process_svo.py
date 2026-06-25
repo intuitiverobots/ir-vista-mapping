@@ -218,7 +218,6 @@ def run_step(
     docker_cmd = [
         "docker", "run",
         "--rm",                      # auto-remove container after exit
-        "--runtime=nvidia",          # L4T/Tegra: NVIDIA runtime (required for ZED daemon low-level access)
         "--gpus", "all",             # NVIDIA GPU access (required by ZED SDK)
         "--privileged",              # USB3/ZED hardware access (needed even for SVO playback)
         "-e", "QT_QPA_PLATFORM=offscreen",  # headless: no X display needed
@@ -228,7 +227,7 @@ def run_step(
         # ZED SDK performs a licence/connectivity check at init; --network none
         # causes a silent 2-minute timeout, so we allow host networking.
         # Mount the host ZED resources directory so the container reuses the
-        # TensorRT engines already compiled on the Jetson (avoids ~10 min recompile).
+        # TensorRT engines already compiled on the host (avoids ~10 min recompile).
         # The host path /usr/local/zed/resources contains the pre-optimised engines.
         "-v", "/usr/local/zed/resources:/usr/local/zed/resources:rw",
         "-v", "/usr/local/zed/settings:/usr/local/zed/settings:ro"
