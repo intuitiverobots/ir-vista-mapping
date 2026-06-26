@@ -13,13 +13,14 @@ import asyncio
 import logging
 import os
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import yaml
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -70,6 +71,45 @@ async def list_svos():
         mtime = datetime.fromtimestamp(os.path.getmtime(p))
         files.append({"name": p.stem, "date": mtime.strftime("%Y-%m-%d %H:%M")})
     return {"svos": files}
+
+
+@router.get("/svos/exists", summary="Check if an SVO2 filename already exists")
+async def svo_exists(name: str):
+    """Return whether an SVO2 with this stem already exists in data/raw/."""
+    if any(c in name for c in ("/", "\\", "..")):
+        raise HTTPException(400, "Invalid name")
+    dest = REPO_ROOT / "data" / "raw" / f"{name}.svo2"
+    return {"exists": dest.is_file(), "name": name}
+
+
+@router.post("/svos/upload", summary="Upload an SVO2 file")
+async def upload_svo(file: UploadFile = File(...), name: str = ""):
+    """Save an uploaded .svo2 file to data/raw/.
+    If `name` is provided, use it as the stem (without .svo2 extension)."""
+    if not file.filename or not file.filename.lower().endswith(".svo2"):
+        raise HTTPException(400, "Only .svo2 files are accepted")
+
+    raw_dir = REPO_ROOT / "data" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use provided name stem, otherwise derive from uploaded filename
+    if name:
+        safe_name = f"{name}.svo2"
+    else:
+        safe_name = Path(file.filename).name
+    dest = raw_dir / safe_name
+
+    try:
+        with open(dest, "wb") as f:
+            while chunk := await file.read(1024 * 1024):  # 1 MB chunks
+                f.write(chunk)
+    except Exception as e:
+        if dest.exists():
+            dest.unlink()
+        raise HTTPException(500, f"Failed to save file: {e}")
+
+    logger.info("Uploaded SVO2: %s (%d bytes)", safe_name, dest.stat().st_size)
+    return {"name": dest.stem, "status": "ok"}
 
 
 @router.get("/presets/{name}", summary="Get editable parameters for a preset")

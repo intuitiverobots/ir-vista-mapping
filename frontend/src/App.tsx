@@ -239,6 +239,70 @@ export default function App() {
   const [dlLoading, setDlLoading] = useState(false)
   const [dlZipping, setDlZipping] = useState(false)
 
+  // ── Upload state ────────────────────────────────────────────────
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
+
+  // ── Duplicate file modal ───────────────────────────────────────
+  const [showDupModal, setShowDupModal] = useState(false)
+  const [dupOriginal, setDupOriginal] = useState('')
+  const [dupName, setDupName] = useState('')
+  const [fileInputKey, setFileInputKey] = useState(0)  // reset file input after upload
+
+  const doUpload = async (overrideName?: string) => {
+    if (!uploadFile) return
+    setUploading(true)
+    setUploadProgress(0)
+    try {
+      const form = new FormData()
+      form.append('file', uploadFile)
+      let url = '/api/svos/upload'
+      if (overrideName) url += `?name=${encodeURIComponent(overrideName)}`
+      const xhr = new XMLHttpRequest()
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100))
+      }
+      await new Promise<void>((resolve, reject) => {
+        xhr.open('POST', url)
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve()
+          else reject(new Error(xhr.responseText || `HTTP ${xhr.status}`))
+        }
+        xhr.onerror = () => reject(new Error('Network error'))
+        xhr.send(form)
+      })
+      toast.success(`Uploaded: ${overrideName ? overrideName + '.svo2' : uploadFile.name}`)
+      setUploadFile(null)
+      setFileInputKey(k => k + 1)  // force file input remount so same file can be re-selected
+      fetchSvos()
+    } catch (err) {
+      toast.error(`Upload failed: ${err instanceof Error ? err.message : err}`)
+    } finally {
+      setUploading(false)
+      setUploadProgress(0)
+    }
+  }
+
+  const handleUpload = async () => {
+    if (!uploadFile) { toast.error('Select a file first'); return }
+    const stem = uploadFile.name.replace(/\.svo2$/i, '')
+    try {
+      const r = await apiGet<{ exists: boolean }>(`/api/svos/exists?name=${encodeURIComponent(stem)}`)
+      if (r.exists) {
+        setDupOriginal(stem)
+        setDupName(stem)
+        setShowDupModal(true)
+        return
+      }
+    } catch { /* proceed even if check fails */ }
+    doUpload()
+  }
+
+  const handleUploadOverwrite = () => { setShowDupModal(false); doUpload() }
+  const handleUploadRename = () => { setShowDupModal(false); doUpload(dupName) }
+  const handleUploadCancel = () => setShowDupModal(false)
+
   const [showNewPreset, setShowNewPreset] = useState(false)
   const [newPresetName, setNewPresetName] = useState('')
   const [newPresetParams, setNewPresetParams] = useState<Record<string, string>>({})
@@ -1332,10 +1396,52 @@ const handleDeletePreset = async () => {
             </button>
           )}
         </section>
+      </main>
 
-        {/* ──────────────────── Download Panel ─────────────────── */}
-        <section className="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-5">
-          <h2 className="text-lg font-semibold">Download data</h2>
+      {/* Upload & Download row */}
+      <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-7xl mx-auto">
+        {/* ──────────────────── Upload SVO2 Panel ──────────────── */}
+          <section className="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-4">
+            <h2 className="text-lg font-semibold">Upload SVO2</h2>
+            <p className="text-xs text-gray-400">
+              Upload an .svo2 file to <code className="text-gray-500">data/raw/</code> for processing.
+            </p>
+            <div className="flex items-center gap-3">
+              <label className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer
+                ${uploading ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-blue-700 text-white hover:bg-blue-600'}`}>
+                Browse…
+                <input
+                  type="file"
+                  accept=".svo2"
+                  disabled={uploading}
+                  onChange={e => setUploadFile(e.target.files?.[0] ?? null)}
+                  className="hidden"
+                  key={fileInputKey}
+                />
+              </label>
+              <span className="text-sm text-gray-400 truncate">
+                {uploadFile ? uploadFile.name : 'No file selected'}
+              </span>
+            </div>
+            {uploadFile && (
+              <p className="text-xs text-gray-500">{((uploadFile.size / 1024 / 1024).toFixed(1))} MB</p>
+            )}
+            <button
+              onClick={handleUpload}
+              disabled={uploading || !uploadFile}
+              className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 rounded-xl
+                         py-2.5 text-sm font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              {uploading
+                ? <><span className="animate-spin">⏳</span> Uploading{uploadProgress > 0 ? ` ${uploadProgress}%` : '…'}</>
+                : <>↑ Upload</>
+              }
+            </button>
+          </section>
+
+          {/* ──────────────────── Download Panel ─────────────────── */}
+          <section className="bg-gray-900 rounded-2xl border border-gray-800 p-6 space-y-5">
+            <h2 className="text-lg font-semibold">Download data</h2>
 
           {/* Session dropdown */}
           <div className="space-y-1">
@@ -1468,7 +1574,50 @@ const handleDeletePreset = async () => {
             <p className="text-sm text-gray-500">No files found for this session.</p>
           )}
         </section>
-      </main>
+      </div>
+
+      {/* ──────────── Duplicate File Modal ──────────── */}
+      {showDupModal && (
+        <div
+          className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+          onClick={e => { if (e.target === e.currentTarget) setShowDupModal(false) }}
+        >
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm">
+            <div className="px-6 py-4 border-b border-gray-800">
+              <h3 className="text-lg font-semibold">File already exists</h3>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              <p className="text-sm text-gray-300">
+                <code className="text-gray-400">{dupName}.svo2</code> already exists in <code className="text-gray-500">data/raw/</code>.
+              </p>
+              <div className="space-y-2">
+                <label className="block text-xs text-gray-400">New name (without .svo2)</label>
+                <input
+                  value={dupName}
+                  onChange={e => setDupName(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm
+                             focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end px-6 py-4 border-t border-gray-800">
+              <button
+                onClick={handleUploadCancel}
+                className="px-4 py-2 rounded-lg text-sm text-gray-300 hover:text-white transition-colors"
+              >Cancel</button>
+              <button
+                onClick={handleUploadRename}
+                disabled={!dupName.trim() || dupName === dupOriginal}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 rounded-xl text-sm font-medium transition-colors"
+              >Rename</button>
+              <button
+                onClick={handleUploadOverwrite}
+                className="px-4 py-2 bg-red-700 hover:bg-red-600 rounded-xl text-sm font-medium transition-colors"
+              >Overwrite</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ────────────────── New Preset Modal ────────────────── */}
       {showNewPreset && (
