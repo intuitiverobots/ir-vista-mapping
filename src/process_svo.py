@@ -391,6 +391,9 @@ def main() -> None:
         print(f"[INFO] Trim end   : {args.trim_end}s")
 
     # ── Docker-in-Docker: swap container paths → host paths for -v mounts ──
+    # Keep the container output path for local file checks (rtabmap.db, etc.)
+    # because the map_generator container can only see its own mounts.
+    container_output_host = output_host
     if args.host_data:
         print(f"[INFO] Host data  : {args.host_data}")
         data_host = args.host_data
@@ -435,7 +438,7 @@ def main() -> None:
             description="Step 1/2 – rtabmap-zed_svo: RGBD-SLAM (ZED SDK VIO)",
             extra_docker_args=slam_extra,
         )
-        db_path = Path(output_host) / "rtabmap.db"
+        db_path = Path(container_output_host) / "rtabmap.db"
         # Retry: Docker volume sync may lag behind container exit
         for attempt in range(5):
             if db_path.is_file():
@@ -443,12 +446,12 @@ def main() -> None:
             if attempt < 4:
                 time.sleep(1)
         if not db_path.is_file():
-            print(f"\n[ERROR] rtabmap.db was not produced in {output_host}.",
+            print(f"\n[ERROR] rtabmap.db was not produced in {container_output_host}.",
                   file=sys.stderr)
             sys.exit(1)
         print(f"\n[OK] rtabmap.db created: {db_path}")
         for fname in ("map.pgm", "map.yaml"):
-            p = Path(output_host) / fname
+            p = Path(container_output_host) / fname
             if p.is_file():
                 print(f"[OK] {p}")
             else:
@@ -459,9 +462,9 @@ def main() -> None:
 
     # ---- Optional: Regen 2D grid from existing DB --------------------
     if args.regen_grid:
-        db_path = Path(output_host) / "rtabmap.db"
+        db_path = Path(container_output_host) / "rtabmap.db"
         if not db_path.is_file():
-            print(f"[ERROR] rtabmap.db not found in {output_host}.", file=sys.stderr)
+            print(f"[ERROR] rtabmap.db not found in {container_output_host}.", file=sys.stderr)
             sys.exit(1)
         regen_extra = list(local_bin_volume)
         run_step(
