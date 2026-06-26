@@ -24,6 +24,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -435,6 +436,12 @@ def main() -> None:
             extra_docker_args=slam_extra,
         )
         db_path = Path(output_host) / "rtabmap.db"
+        # Retry: Docker volume sync may lag behind container exit
+        for attempt in range(5):
+            if db_path.is_file():
+                break
+            if attempt < 4:
+                time.sleep(1)
         if not db_path.is_file():
             print(f"\n[ERROR] rtabmap.db was not produced in {output_host}.",
                   file=sys.stderr)
