@@ -318,6 +318,27 @@ def main() -> None:
         help="SuperGlue model variant. Only used with --superpoint (default: indoor).",
     )
 
+    # ── Docker-in-Docker: host path overrides ─────────────────────────
+    # When process_svo.py runs inside a container that uses the host's
+    # Docker socket, the left-hand side of -v mounts must be host paths,
+    # not container paths.  These optional args are set by the caller
+    # (e.g. video_rtab.py in the map_generator container).
+    parser.add_argument(
+        "--host-data",
+        default=None,
+        help="Host-side path for the SVO data directory (overrides data_host for -v mounts).",
+    )
+    parser.add_argument(
+        "--host-output",
+        default=None,
+        help="Host-side path for the output directory (overrides output_host for -v mounts).",
+    )
+    parser.add_argument(
+        "--host-models",
+        default=None,
+        help="Host-side path for the models directory (overrides CWD-based path for SuperPoint mounts).",
+    )
+
     args, extra = parser.parse_known_args()
 
     # --regen-grid implies --skip-slam and --skip-export: only the grid is rebuilt
@@ -368,6 +389,15 @@ def main() -> None:
         print(f"[INFO] Trim start : {args.trim_start}s")
         print(f"[INFO] Trim end   : {args.trim_end}s")
 
+    # ── Docker-in-Docker: swap container paths → host paths for -v mounts ──
+    if args.host_data:
+        print(f"[INFO] Host data  : {args.host_data}")
+        data_host = args.host_data
+    if args.host_output:
+        print(f"[INFO] Host output: {args.host_output}")
+        output_host = args.host_output
+    host_models = args.host_models  # None if not provided → use Path.cwd()/models
+
     # Local binary override: mount host-compiled binary into the container
     # to avoid rebuilding Docker for every code change.
     local_bin = Path(__file__).resolve().parent.parent / "tools/ZedSvo/build/zed_svo"
@@ -385,8 +415,17 @@ def main() -> None:
                                          rtabmap_extra_params)
         slam_extra = list(local_bin_volume)
         if args.superpoint:
-            slam_extra += ["-v", f"{Path.cwd()}/models:/models:ro"]
-            slam_extra += ["-v", f"{Path.cwd()}/models/superglue_{args.superpoint_model}.pt:/opt/SuperGluePretrainedNetwork/models/weights/superglue_{args.superpoint_model}.pth:ro"]
+            models_host = host_models if host_models else str(Path.cwd() / "models")
+            superglue_host = (
+                f"{host_models}/superglue_{args.superpoint_model}.pt"
+                if host_models
+                else str(Path.cwd() / "models" / f"superglue_{args.superpoint_model}.pt")
+            )
+            slam_extra += ["-v", f"{models_host}:/models:ro"]
+            slam_extra += [
+                "-v",
+                f"{superglue_host}:/opt/SuperGluePretrainedNetwork/models/weights/superglue_{args.superpoint_model}.pth:ro",
+            ]
         run_step(
             image=args.image,
             data_host=data_host,
@@ -432,8 +471,17 @@ def main() -> None:
         export_cmd = build_export_cmd("/output", args.render)
         export_extra = []
         if args.superpoint:
-            export_extra += ["-v", f"{Path.cwd()}/models:/models:ro"]
-            export_extra += ["-v", f"{Path.cwd()}/models/superglue_{args.superpoint_model}.pt:/opt/SuperGluePretrainedNetwork/models/weights/superglue_{args.superpoint_model}.pth:ro"]
+            models_host = host_models if host_models else str(Path.cwd() / "models")
+            superglue_host = (
+                f"{host_models}/superglue_{args.superpoint_model}.pt"
+                if host_models
+                else str(Path.cwd() / "models" / f"superglue_{args.superpoint_model}.pt")
+            )
+            export_extra += ["-v", f"{models_host}:/models:ro"]
+            export_extra += [
+                "-v",
+                f"{superglue_host}:/opt/SuperGluePretrainedNetwork/models/weights/superglue_{args.superpoint_model}.pth:ro",
+            ]
         run_step(
             image=args.image,
             data_host=data_host,
