@@ -112,11 +112,13 @@ def main(opt):
         ext = os.path.splitext(video_output_path)[1].lower()
         # For MP4 output: write to a temp AVI first, then re-encode with ffmpeg (libx264, browser-compatible)
         if ext == '.mp4':
+            sys.stdout.write("Exporting to MP4\n")
             tmp_fd, tmp_avi_path = tempfile.mkstemp(suffix='.avi')
             os.close(tmp_fd)
             writer_path = tmp_avi_path
             fourcc = cv2.VideoWriter.fourcc('M', '4', 'S', '2')
         else:  # .avi
+            sys.stdout.write("Exporting to AVI\n")
             writer_path = video_output_path
             fourcc = cv2.VideoWriter.fourcc('M', '4', 'S', '2')
         width_out = width if opt.side != 'both' else width_sbs
@@ -264,6 +266,7 @@ def main(opt):
                     sys.stdout.write("ffmpeg re-encoding failed:\n" + result.stderr.decode() + "\n")
                 else:
                     sys.stdout.write("Re-encoding done.\n")
+                    sys.stdout.write("Including audio...\n")
                     # --- Audio mux ---
                     #
                     # Two modes are supported:
@@ -293,94 +296,176 @@ def main(opt):
 
                     # ── Check for segmented manifest first ───────────────
                     if manifest_path.is_file() and vid_dur is not None:
+                        sys.stdout.write(f"Manifest file found. Video duration = {vid_dur:.2f}s\n")
                         import json as _json
                         try:
                             manifest = _json.loads(manifest_path.read_text())
                         except (ValueError, OSError):
+                            sys.stdout.write(f"Failed to read manifest file: {manifest_path}\n")
                             manifest = {"segments": []}
 
                         raw_segments = manifest.get("segments", [])
-                        trim_s = float(opt.trim_start)
-                        trim_e = float(opt.trim_end)
+                        audio_mode = manifest.get("audio_mode", "continuous")
+                        sys.stdout.write(f"Audio mode: {audio_mode}  ({len(raw_segments)} segment(s))\n")
 
-                        # Adjust segment times for video trim and clip to video bounds
-                        active: list[tuple[Path, float, float]] = []
-                        for seg in raw_segments:
-                            seg_path = audio_dir / seg["file"]
-                            if not seg_path.is_file():
-                                continue
-                            t0 = float(seg["start_time"]) - trim_s
-                            t1 = float(seg["end_time"]) - trim_s
-                            if t1 <= 0.0:
-                                continue
-                            vid_end = vid_dur if trim_e == 0 else max(0.0, vid_dur)
-                            if t0 >= vid_end:
-                                continue
-                            t0 = max(0.0, t0)
-                            t1 = min(vid_end, t1)
-                            if t1 > t0:
-                                active.append((seg_path, t0, t1))
-
-                        if active:
-                            sys.stdout.write(
-                                f"Muxing {len(active)} audio segment(s) with ffmpeg "
-                                f"(video={vid_dur:.2f}s)...\n"
-                            )
-                            # Build ffmpeg command: silent background + adelay'd segments → amix
-                            ff_cmd = [
-                                "ffmpeg", "-y",
-                                "-i", video_output_path,
-                            ]
-                            filter_chains: list[str] = []
-                            amix_labels: list[str] = []
-                            for i, (spath, t0, _t1) in enumerate(active):
-                                ff_cmd.extend(["-i", str(spath)])
-                                delay_ms = int(round(t0 * 1000))
-                                filter_chains.append(
-                                    f"[{i + 1}:a]aresample=44100,aformat=channel_layouts=stereo,"
-                                    f"adelay={delay_ms}|{delay_ms}[a{i}]"
-                                )
-                                amix_labels.append(f"[a{i}]")
-
-                            # anullsrc background track matching the video duration (stereo, 44100 Hz)
-                            filter_complex = (
-                                f"anullsrc=r=44100:cl=stereo:d={vid_dur}[bg];"
-                                + ";".join(filter_chains) + ";"
-                                + f"[bg]{''.join(amix_labels)}amix="
-                                  f"inputs={len(amix_labels) + 1}:"
-                                  f"duration=first:dropout_transition=0[outa]"
-                            )
-                            ff_cmd += [
-                                "-filter_complex", filter_complex,
-                                "-map", "0:v",
-                                "-map", "[outa]",
-                                "-c:v", "copy",
-                                "-c:a", "aac",
-                            ]
-                            tmp_muxed = video_output_path + ".muxed.mp4"
-                            ff_cmd.append(tmp_muxed)
-
-                            mux_result = subprocess.run(ff_cmd, stderr=subprocess.PIPE)
-                            if mux_result.returncode == 0:
-                                os.replace(tmp_muxed, video_output_path)
-                                sys.stdout.write("Audio mux done.\n")
+                        # ── Continuous mode: use legacy single-file mux path ──
+                        # The legacy path computes audio_offset = aud_dur - vid_dur + tail
+                        # which correctly handles the camera-open + warmup offset that
+                        # continuous recordings naturally have.
+                        if audio_mode == "continuous" and raw_segments:
+                            seg0 = raw_segments[0]
+                            audio_path = audio_dir / seg0["file"]
+                            if audio_path.is_file():
+                                aud_dur = _get_duration(str(audio_path))
+                                if aud_dur is not None:
+                                    _SVO_TAIL_S = 0.3
+                                    audio_offset = max(0.0, aud_dur - vid_dur + _SVO_TAIL_S)
+                                    sys.stdout.write(
+                                        f"[timing] continuous mode – legacy mux: "
+                                        f"video={vid_dur:.2f}s  audio={aud_dur:.2f}s  "
+                                        f"skip={audio_offset:.2f}s\n"
+                                    )
+                                    tmp_muxed = video_output_path + ".muxed.mp4"
+                                    mux_result = subprocess.run(
+                                        [
+                                            "ffmpeg", "-y",
+                                            "-i", video_output_path,
+                                            "-ss", f"{audio_offset:.6f}",
+                                            "-i", str(audio_path),
+                                            "-c:v", "copy",
+                                            "-c:a", "aac",
+                                            tmp_muxed,
+                                        ],
+                                        stderr=subprocess.PIPE,
+                                    )
+                                    if mux_result.returncode == 0:
+                                        os.replace(tmp_muxed, video_output_path)
+                                        sys.stdout.write("Audio mux done (legacy continuous).\n")
+                                    else:
+                                        if os.path.exists(tmp_muxed):
+                                            os.remove(tmp_muxed)
+                                        sys.stdout.write("Audio mux failed:\n" + mux_result.stderr.decode() + "\n")
+                                else:
+                                    sys.stdout.write("Audio mux skipped: could not read audio duration.\n")
                             else:
-                                if os.path.exists(tmp_muxed):
-                                    os.remove(tmp_muxed)
-                                err_out = mux_result.stderr.decode(errors="replace")
-                                # Print only the last 4 lines of ffmpeg output on failure
-                                err_tail = "\n".join(
-                                    [l for l in err_out.splitlines() if l.strip()][-4:]
-                                )
+                                sys.stdout.write(f"Audio file not found: {audio_path}\n")
+
+                        # ── Push-to-talk / Start-stop: use per-segment adelay ──
+                        elif audio_mode != "continuous":
+                            trim_s = float(opt.trim_start)
+                            trim_e = float(opt.trim_end)
+                            sys.stdout.write(f"[timing] trim_start={trim_s:.3f}s  trim_end={trim_e:.3f}s  vid_dur={vid_dur:.3f}s\n")
+
+                            # Adjust segment times for video trim and clip to video bounds
+                            active: list[tuple[Path, float, float]] = []
+                            for seg in raw_segments:
+                                seg_path = audio_dir / seg["file"]
+                                raw_t0 = float(seg["start_time"])
+                                raw_t1 = float(seg["end_time"])
+                                t0 = raw_t0 - trim_s
+                                t1 = raw_t1 - trim_s
+                                seg_dur = _get_duration(str(seg_path)) if seg_path.is_file() else None
                                 sys.stdout.write(
-                                    f"Audio mux failed (ffmpeg exit {mux_result.returncode}):\n"
-                                    f"{err_tail}\n"
+                                    f"[timing] seg {seg['index']}: raw=[{raw_t0:.3f}s, {raw_t1:.3f}s]  "
+                                    f"adj=[{t0:.3f}s, {t1:.3f}s]  "
+                                    f"file_dur={seg_dur:.3f}s\n" if seg_dur is not None else
+                                    f"[timing] seg {seg['index']}: raw=[{raw_t0:.3f}s, {raw_t1:.3f}s]  "
+                                    f"adj=[{t0:.3f}s, {t1:.3f}s]  file=NOT_FOUND\n"
                                 )
-                        else:
-                            sys.stdout.write("Audio mux skipped: no valid segments after trim.\n")
+                                if not seg_path.is_file():
+                                    sys.stdout.write(f"Audio segment not found: {seg_path}\n")
+                                    continue
+                                if t1 <= 0.0:
+                                    sys.stdout.write(f"Audio segment {seg_path} ends before trim start, skipping.\n")
+                                    continue
+                                vid_end = vid_dur if trim_e == 0 else max(0.0, vid_dur)
+                                if t0 >= vid_end:
+                                    sys.stdout.write(f"Audio segment {seg_path} starts after trim end, skipping.\n")
+                                    continue
+                                # Do NOT clamp t0 here – negative t0 means audio started
+                                # before the video; we'll trim the audio head below.
+                                t1 = min(vid_end, t1)
+                                if t1 > max(0.0, t0):
+                                    active.append((seg_path, t0, t1))
+
+                            if active:
+                                sys.stdout.write(
+                                    f"Muxing {len(active)} audio segment(s) with ffmpeg "
+                                    f"(video={vid_dur:.2f}s)...\n"
+                                )
+                                # Build ffmpeg command: silent background + adelay'd segments → amix
+                                ff_cmd = [
+                                    "ffmpeg", "-y",
+                                    "-i", video_output_path,
+                                ]
+                                filter_chains: list[str] = []
+                                amix_labels: list[str] = []
+                                for i, (spath, t0, _t1) in enumerate(active):
+                                    if t0 < 0.0:
+                                        trim_sec = abs(t0)
+                                        sys.stdout.write(
+                                            f"[timing] seg -> -ss {trim_sec:.3f}s (seek into audio file)\n"
+                                        )
+                                        ff_cmd.extend([
+                                            "-ss", f"{trim_sec:.3f}",
+                                            "-i", str(spath),
+                                        ])
+                                        filter_chains.append(
+                                            f"[{i + 1}:a]aresample=44100,"
+                                            f"aformat=channel_layouts=stereo[a{i}]"
+                                        )
+                                    else:
+                                        delay_ms = int(round(t0 * 1000))
+                                        sys.stdout.write(
+                                            f"[timing] seg -> adelay={delay_ms}ms (t0={t0:.3f}s)\n"
+                                        )
+                                        ff_cmd.extend(["-i", str(spath)])
+                                        filter_chains.append(
+                                            f"[{i + 1}:a]aresample=44100,aformat=channel_layouts=stereo,"
+                                            f"adelay={delay_ms}|{delay_ms}[a{i}]"
+                                        )
+                                    amix_labels.append(f"[a{i}]")
+
+                                # anullsrc background track matching the video duration (stereo, 44100 Hz)
+                                filter_complex = (
+                                    f"anullsrc=r=44100:cl=stereo:d={vid_dur}[bg];"
+                                    + ";".join(filter_chains) + ";"
+                                    + f"[bg]{''.join(amix_labels)}amix="
+                                      f"inputs={len(amix_labels) + 1}:"
+                                      f"duration=first:dropout_transition=0[outa]"
+                                )
+                                ff_cmd += [
+                                    "-filter_complex", filter_complex,
+                                    "-map", "0:v",
+                                    "-map", "[outa]",
+                                    "-c:v", "copy",
+                                    "-c:a", "aac",
+                                ]
+                                tmp_muxed = video_output_path + ".muxed.mp4"
+                                ff_cmd.append(tmp_muxed)
+
+                                mux_result = subprocess.run(ff_cmd, stderr=subprocess.PIPE)
+                                if mux_result.returncode == 0:
+                                    os.replace(tmp_muxed, video_output_path)
+                                    sys.stdout.write("Audio mux done.\n")
+                                else:
+                                    if os.path.exists(tmp_muxed):
+                                        os.remove(tmp_muxed)
+                                    err_out = mux_result.stderr.decode(errors="replace")
+                                    # Print only the last 4 lines of ffmpeg output on failure
+                                    err_tail = "\n".join(
+                                        [l for l in err_out.splitlines() if l.strip()][-4:]
+                                    )
+                                    sys.stdout.write(
+                                        f"Audio mux failed (ffmpeg exit {mux_result.returncode}):\n"
+                                        f"{err_tail}\n"
+                                    )
+                            else:
+                                sys.stdout.write("Audio mux skipped: no valid segments after trim.\n")
 
                     # ── Fallback: legacy single-file audio ───────────────
                     elif not manifest_path.is_file():
+                        sys.stdout.write("No manifest file found. Checking for legacy single-file audio next to SVO...\n")
                         audio_path = None
                         for _ext in ('.webm', '.ogg'):
                             _candidate = svo_stem.with_suffix(_ext)

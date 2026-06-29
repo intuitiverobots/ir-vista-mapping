@@ -48,6 +48,7 @@ async def upload_audio(
     start_time: float = Form(default=0.0, description="Segment start offset from video start (seconds)"),
     end_time: float = Form(default=0.0, description="Segment end offset from video start (seconds)"),
     segment_index: int = Form(default=0, description="Zero-based index of this audio segment"),
+    audio_mode: str = Form(default="continuous", description="Recording mode: continuous, push-to-talk, or start-stop"),
 ):
     """Save the uploaded audio blob alongside the corresponding .svo2 file.
 
@@ -81,6 +82,10 @@ async def upload_audio(
     manifest_path = audio_dir / _MANIFEST_FILENAME
     manifest = _read_manifest(manifest_path)
 
+    # Store the audio recording mode at the top level (used by svo_export.py
+    # to choose the correct mux strategy)
+    manifest["audio_mode"] = audio_mode
+
     # Replace if a segment with the same index already exists (re-upload / overwrite)
     manifest["segments"] = [s for s in manifest["segments"] if s["index"] != segment_index]
     manifest["segments"].append({
@@ -95,8 +100,8 @@ async def upload_audio(
     _write_manifest(manifest_path, manifest)
 
     logger.info(
-        "Audio segment saved → %s  [%.1f–%.1fs]  (%d bytes)",
-        segment_path, start_time, end_time, len(content),
+        "Audio segment saved → %s  [%.1f–%.1fs]  mode=%s  (%d bytes)",
+        segment_path, start_time, end_time, audio_mode, len(content),
     )
     return {
         "status": "saved",

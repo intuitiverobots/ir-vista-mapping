@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import toast, { Toaster } from 'react-hot-toast'
-import type { RecordStatus, PipelineStatus, SvoFile, PipelinePayload, ParamDef, DlSession, DlFile, AudioMode, AudioRecordState } from './types'
 import { Input } from './components/Input'
-import { Select } from './components/Select'
 import { ParamField } from './components/ParamField'
+import { Select } from './components/Select'
 import { useLogStream } from './hooks/useLogStream'
+import type { AudioMode, AudioRecordState, DlFile, DlSession, ParamDef, PipelinePayload, PipelineStatus, RecordStatus, SvoFile } from './types'
 
 // ── API helpers ───────────────────────────────────────────────────────────
 
@@ -64,6 +64,7 @@ async function uploadAudioSegment(
   startTime: number,
   endTime: number,
   index: number,
+  audioMode: AudioMode,
 ) {
   const form = new FormData()
   form.append('file', blob, `${sessionName}_seg${String(index).padStart(3, '0')}.webm`)
@@ -71,6 +72,8 @@ async function uploadAudioSegment(
   form.append('start_time', String(startTime))
   form.append('end_time', String(endTime))
   form.append('segment_index', String(index))
+  form.append('audio_mode', audioMode)
+  console.log('[timing] uploadAudioSegment – audio_mode=', audioMode, ' index=', index)
   const r = await fetch('/api/record/audio', { method: 'POST', body: form })
   if (!r.ok) console.error('Audio segment upload failed', r.status)
   return r.ok
@@ -202,6 +205,7 @@ export default function App() {
   const [segmentIdx, setSegmentIdx] = useState(0)
   const audioSegmentStartRef = useRef<number>(0)  // seconds since video recording began
   const audioStreamRef = useRef<MediaStream | null>(null)  // shared stream for push-to-talk reuse
+  const pendingContinuousRef = useRef<{ mr: MediaRecorder; stream: MediaStream } | null>(null)
 
   // ── Pipeline state ─────────────────────────────────────────────
   const [configs, setConfigs] = useState<string[]>([])
@@ -315,7 +319,7 @@ export default function App() {
         setRecordStatus(ok ? 'done' : 'error')
         setRecordLogs(prev => [...prev, ok ? '[OK] Recording done.' : `[ERROR] Exit code ${m?.[1]}.`])
         setRecordSseUrl(null)
-        if (timerRef.current) clearInterval(timerRef.current)
+        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
         sse.close()
       } else {
         const fm = data.match(/Frame count:\s*(\d+)/i)
@@ -324,11 +328,22 @@ export default function App() {
           setFrameCount(count)
           // Start the timer on the very first frame
           if (count === 1 && !timerRef.current) {
+            const tFrame1 = performance.now()
+            console.log('[timing] Frame 1 received via SSE', tFrame1.toFixed(0), 'ms')
             startTimeRef.current = Date.now()
             timerRef.current = setInterval(
               () => setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000)),
               1000,
             )
+            // Start continuous audio – same timing primitives as push-to-talk
+            const pending = pendingContinuousRef.current
+            if (pending) {
+              pendingContinuousRef.current = null
+              audioSegmentStartRef.current = getElapsedNow()
+              console.log('[timing] Calling mr.start() – audioSegmentStartRef =', audioSegmentStartRef.current.toFixed(3), 's')
+              pending.mr.start()
+              mediaRecorderRef.current = pending.mr
+            }
           }
         } else if (data && !data.startsWith(':')) {
           setRecordLogs(prev => [...prev, data])
@@ -370,6 +385,36 @@ export default function App() {
     }
 
     try {
+      // ── Continuous audio: same timing strategy as push-to-talk ──
+      // Create MediaRecorder now but defer .start() until the SSE handler
+      // receives "Frame count: 1".  At that point it calls the same
+      //   audioSegmentStartRef.current = getElapsedNow()
+      //   mr.start()
+      // pattern used by _beginSegment().
+      if (audioMode === 'continuous' && audioStream) {
+        audioChunksRef.current = []
+        const tMrCreated = performance.now()
+        const mr = new MediaRecorder(audioStream)
+        console.log('[timing] MediaRecorder created', tMrCreated.toFixed(0), 'ms  state=', mr.state)
+        mr.ondataavailable = (e: BlobEvent) => {
+          if (e.data.size > 0) audioChunksRef.current.push(e.data)
+        }
+        mr.onstart = () => {
+          console.log('[timing] MediaRecorder.onstart fired', performance.now().toFixed(0), 'ms')
+        }
+        mr.onstop = () => {
+          const tStop = performance.now()
+          audioStream!.getTracks().forEach(t => t.stop())
+          audioStreamRef.current = null
+          const blob = new Blob(audioChunksRef.current, { type: mr.mimeType })
+          const endTime = getElapsedNow()
+          const startTime = audioSegmentStartRef.current
+          console.log('[timing] mr.onstop – startTime=', startTime.toFixed(3), 's  endTime=', endTime.toFixed(3), 's  blob=', blob.size, 'bytes  t=', tStop.toFixed(0), 'ms')
+          uploadAudioSegment(sessionName.trim(), blob, startTime, endTime, 0, audioMode)
+        }
+        pendingContinuousRef.current = { mr, stream: audioStream }
+      }
+
       await apiPost('/api/record/start', {
         session_name: sessionName.trim(),
         resolution,
@@ -385,29 +430,10 @@ export default function App() {
       // Seed the start-time ref immediately so audio segments get valid timestamps
       // even before the first video frame arrives.  The SSE handler will refine it.
       startTimeRef.current = Date.now()
+      console.log('[timing] startTimeRef seeded (initial)', performance.now().toFixed(0), 'ms')
       setRecordSseUrl(`/api/logs/record?t=${Date.now()}`)
       setSegmentIdx(0)
 
-      // Audio recording start differs per mode
-      if (audioMode === 'continuous' && audioStream) {
-        // ── Continuous mode: record one long audio track (existing behaviour) ──
-        audioChunksRef.current = []
-        const mr = new MediaRecorder(audioStream)
-        mr.ondataavailable = (e: BlobEvent) => {
-          if (e.data.size > 0) audioChunksRef.current.push(e.data)
-        }
-        mr.onstop = () => {
-          audioStream!.getTracks().forEach(t => t.stop())
-          audioStreamRef.current = null
-          const blob = new Blob(audioChunksRef.current, { type: mr.mimeType })
-          // Compute actual elapsed at stop time (not the stale state closure)
-          const endTime = (Date.now() - startTimeRef.current) / 1000
-          uploadAudioSegment(sessionName.trim(), blob, 0, Math.max(0, endTime), 0)
-        }
-        const delayMs = ((isNaN(parseFloat(imuWarmup)) ? 2.0 : parseFloat(imuWarmup))
-          + (isNaN(parseInt(captureWait)) ? 0 : parseInt(captureWait))) * 1000
-        setTimeout(() => { mr.start(); mediaRecorderRef.current = mr }, delayMs)
-      }
       // For push-to-talk and start-stop, the microphone stream is already open;
       // recording starts on user action (see push-to-talk / start-stop handlers).
     } catch (err) {
@@ -420,7 +446,7 @@ export default function App() {
   const handleStopRecording = async () => {
     try {
       await apiPost('/api/record/stop')
-      if (timerRef.current) clearInterval(timerRef.current)
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
 
       // Stop any active audio recording
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -431,6 +457,11 @@ export default function App() {
       if (audioStreamRef.current) {
         audioStreamRef.current.getTracks().forEach(t => t.stop())
         audioStreamRef.current = null
+      }
+      // Discard pending continuous audio that never started (stopped before first frame)
+      if (pendingContinuousRef.current) {
+        pendingContinuousRef.current.stream.getTracks().forEach(t => t.stop())
+        pendingContinuousRef.current = null
       }
       setAudioRecordState('idle')
     } catch (err) {
@@ -470,7 +501,7 @@ export default function App() {
       const endTime = getElapsedNow()
       const startTime = audioSegmentStartRef.current
       const idx = segmentIdx
-      uploadAudioSegment(sessionName.trim(), blob, startTime, endTime, idx)
+      uploadAudioSegment(sessionName.trim(), blob, startTime, endTime, idx, audioMode)
       setSegmentIdx(prev => prev + 1)
     }
     audioSegmentStartRef.current = getElapsedNow()
