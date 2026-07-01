@@ -240,6 +240,9 @@ def run_step(
     docker_cmd.append(image)
     docker_cmd.extend(cmd_in_container)
 
+    sys.stdout.write(f"------------------ Running commmand: -------------------\n")
+    sys.stdout.write(f"Command: {' '.join(docker_cmd)}\n")
+
     return run(docker_cmd, description, fatal=fatal)
 
 

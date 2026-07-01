@@ -73,6 +73,11 @@ FROM stereolabs/zed:5.2-tools-devel-l4t-r36.4
 | ffmpeg |
 | Disk | ~15 GB free (ZED base image ~8 GB + RTAB-Map build ~4 GB) |
 
+You can download the ZED 2I SDK from this page:
+https://www.stereolabs.com/en-fr/developers/release/5.2
+ZED SDK for JetPack 6.2.2 (L4T 36.5) 5.2 (Jetson Orin, CUDA 12.6)
+
+
 Verify NVIDIA Container Toolkit:
 ```bash
 sudo docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu22.04 nvidia-smi
@@ -133,7 +138,42 @@ node -v # Should print "v24.17.0".
 npm -v
 ```
 
-### 5. Start the server
+### 5. Generate SSL certificate (for HTTPS / microphone access)
+
+Browser microphone access (`getUserMedia`) is **only allowed over HTTPS**
+(except on `localhost`).  A self-signed certificate is sufficient for field use —
+the operator simply accepts the browser warning on first visit.
+
+Generate the key and certificate with OpenSSL (pre-installed on Ubuntu):
+
+```bash
+# From the repo root:
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem \
+    -days 3650 -nodes \
+    -subj "/CN=jetson.local/O=VistaMapper" \
+    -addext "subjectAltName = DNS:jetson.local,IP:10.42.0.1,IP:127.0.0.1"
+```
+
+| Flag | Purpose |
+|---|---|
+| `-x509` | Self-signed certificate (no CA needed) |
+| `-days 3650` | Valid for ~10 years |
+| `-nodes` | No passphrase on the private key (required for unattended startup) |
+| `-subj` | Skips the interactive prompts |
+| `-addext subjectAltName` | Lets the browser match multiple addresses (mDNS name + hotspot IP + localhost) |
+
+> **Add your actual hotspot IP** if it differs from `10.42.0.1` (the default
+> for Jetson's built-in hotspot).  You can list multiple `IP:` entries.
+
+Verify the certificate was created:
+
+```bash
+ls -l cert.pem key.pem
+# -rw-rw-r--  ... cert.pem
+# -rw-------  ... key.pem
+```
+
+### 6. Start the server
 
 ```bash
 python3 -m backend.main --host 0.0.0.0 --port 8080
@@ -142,6 +182,21 @@ python3 -m backend.main --host 0.0.0.0 --port 8080
 The server auto-detects `cert.pem` and `key.pem` in the repo root.  When both are
 present it starts in **HTTPS** mode (required for browser microphone access).
 Otherwise it falls back to plain HTTP.
+
+You should see this line in the startup logs when HTTPS is active:
+
+```
+SSL enabled – HTTPS on https://0.0.0.0:8080
+```
+
+If you instead see:
+
+```
+SSL disabled (files missing: …/cert.pem / …/key.pem)
+```
+
+double-check that you ran `openssl` from the repository root and that both files
+exist.
 
 The app is then available at:
 
@@ -389,6 +444,12 @@ vista-mapping-pipeline/
 ---
 
 ## Troubleshooting
+
+**Browser shows "206 Partial Content" / "Invalid HTTP request" in server logs**
+→ The browser is trying HTTPS but the server is running in HTTP-only mode
+  (no `cert.pem` / `key.pem` found).  Generate the certificates first — see
+  **Step 5** in the Installation section above.
+→ Also check that you are using `https://` in the URL, not `http://`.
 
 **`image not found` when starting the pipeline**
 → Build the Docker image first (Step 2 above).
