@@ -374,7 +374,7 @@ def main() -> None:
 
     # Local binary override: mount host-compiled binary into the container
     # to avoid rebuilding Docker for every code change.
-    local_bin = Path(__file__).resolve().parent.parent / "tools/ZedSvo/build/zed_svo"
+    local_bin = Path(__file__).resolve().parent.parent / "tools/ZedSvo/build/rtabmap-zed_svo"
     local_bin_volume = ([("-v"), f"{local_bin}:/usr/local/bin/rtabmap-zed_svo:ro"]
                         if local_bin.is_file() else [])
     if local_bin.is_file():
